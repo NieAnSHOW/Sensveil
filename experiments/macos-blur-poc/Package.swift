@@ -6,13 +6,16 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "PoCCore", targets: ["PoCCore"]),
+        .library(name: "Sensveil", targets: ["Sensveil"]),
         .executable(name: "SensveilPoC", targets: ["SensveilPoC"]),
         .executable(name: "SensveilFixture", targets: ["SensveilFixture"])
     ],
     targets: [
         .target(name: "PoCCore"),
+        .target(name: "Sensveil"),
         .executableTarget(name: "SensveilPoC", dependencies: ["PoCCore"]),
         .executableTarget(name: "SensveilFixture"),
-        .testTarget(name: "PoCCoreTests", dependencies: ["PoCCore"])
+        .testTarget(name: "PoCCoreTests", dependencies: ["PoCCore"]),
+        .testTarget(name: "SensveilTests", dependencies: ["Sensveil"])
     ]
 )
