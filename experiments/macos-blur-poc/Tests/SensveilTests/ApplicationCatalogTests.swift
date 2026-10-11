@@ -4,6 +4,24 @@ import XCTest
 
 final class ApplicationCatalogTests: XCTestCase {
     @MainActor
+    func testControllerCannotOverwriteConfigurationAfterLoadFailure() throws {
+        for contents in [#"{"schemaVersion":999,"applications":[],"isGloballyPaused":false}"#, "not-json"] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let store = ConfigurationStore(appSupportDirectory: directory)
+            let original = Data(contents.utf8)
+            try original.write(to: store.configURL)
+            let controller = SensveilController(configurationStore: store, catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false))
+            XCTAssertTrue(controller.configurationLoadFailed)
+            controller.addApplication(ApplicationDescriptor(bundleIdentifier: "com.example.one", displayName: "One", url: directory.appendingPathComponent("One.app")))
+            controller.removeApplication(ProtectedApplication(bundleIdentifier: "com.example.one", displayName: "One"))
+            XCTAssertEqual(try Data(contentsOf: store.configURL), original)
+            XCTAssertNotNil(controller.errorMessage)
+        }
+    }
+
+    @MainActor
     func testControllerKeepsOriginalConfigurationWhenThirdApplicationIsAdded() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

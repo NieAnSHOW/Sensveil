@@ -17,6 +17,7 @@ public struct ManagementView: View {
                     } label: {
                         Image(systemName: "trash")
                     }.help("Remove application")
+                    .disabled(controller.isConfigurationReadOnly)
                 }
             }
             TextField("Search applications", text: $controller.searchText)
@@ -36,6 +37,7 @@ public struct ManagementView: View {
             }
             HStack {
                 Button("Add Application…") { Task { await controller.addApplication() } }
+                    .disabled(controller.isConfigurationReadOnly)
                 Text(controller.freeLimitMessage).font(.caption).foregroundStyle(.secondary)
             }
             if let errorMessage = controller.errorMessage { Text(errorMessage).foregroundStyle(.red) }

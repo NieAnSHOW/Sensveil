@@ -246,7 +246,7 @@ public final class ConfigurationStore {
     }
 }
 
-private enum BundleIdentifierValidator {
+enum BundleIdentifierValidator {
     static func isValid(_ value: String) -> Bool {
         guard !value.isEmpty, !value.hasPrefix("."), !value.hasSuffix(".") else { return false }
         let components = value.split(separator: ".", omittingEmptySubsequences: false)
