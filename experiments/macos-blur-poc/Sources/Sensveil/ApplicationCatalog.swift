@@ -35,22 +35,25 @@ public final class ApplicationCatalog {
     private let fileManager: FileManager
     private let ownBundleIdentifier: String?
     private let applicationDirectories: [URL]
+    private let includesRunningApplications: Bool
 
     public init(
         workspace: NSWorkspace = .shared,
         fileManager: FileManager = .default,
         ownBundleIdentifier: String? = Bundle.main.bundleIdentifier,
-        applicationDirectories: [URL]? = nil
+        applicationDirectories: [URL]? = nil,
+        includesRunningApplications: Bool = true
     ) {
         self.workspace = workspace
         self.fileManager = fileManager
         self.ownBundleIdentifier = ownBundleIdentifier
         self.applicationDirectories = applicationDirectories ?? Self.defaultApplicationDirectories(fileManager: fileManager)
+        self.includesRunningApplications = includesRunningApplications
     }
 
     public func list(search: String = "") -> [ApplicationDescriptor] {
         var byBundleID: [String: ApplicationDescriptor] = [:]
-        let running = workspace.runningApplications.compactMap { application -> ApplicationDescriptor? in
+        let running = (includesRunningApplications ? workspace.runningApplications : []).compactMap { application -> ApplicationDescriptor? in
             guard let url = application.bundleURL else { return nil }
             return Self.descriptor(
                 at: url,
@@ -78,11 +81,23 @@ public final class ApplicationCatalog {
         let normalizedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return byBundleID.values
             .filter { normalizedSearch.isEmpty || $0.displayName.lowercased().contains(normalizedSearch) || $0.bundleIdentifier.lowercased().contains(normalizedSearch) }
-            .sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            .sorted {
+                let comparison = $0.displayName.localizedStandardCompare($1.displayName)
+                return comparison == .orderedSame ? $0.bundleIdentifier < $1.bundleIdentifier : comparison == .orderedAscending
+            }
+            .map(withIcon)
     }
 
     public func descriptor(for url: URL) -> ApplicationDescriptor? {
-        Self.descriptor(at: url, isRunning: false, ownBundleIdentifier: ownBundleIdentifier)
+        Self.descriptor(at: url, isRunning: workspace.runningApplications.contains { $0.bundleURL == url && $0.activationPolicy == .regular }, ownBundleIdentifier: ownBundleIdentifier).map(withIcon)
+    }
+
+    private func withIcon(_ descriptor: ApplicationDescriptor) -> ApplicationDescriptor {
+        // Only the UI-facing catalog touches AppKit image data; plist parsing stays pure.
+        let icon = workspace.icon(forFile: descriptor.url.path)
+        icon.size = NSSize(width: 32, height: 32)
+        let data = icon.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }
+        return ApplicationDescriptor(bundleIdentifier: descriptor.bundleIdentifier, displayName: descriptor.displayName, url: descriptor.url, iconData: data, isRunning: descriptor.isRunning)
     }
 
     public func chooseApplication() async -> ApplicationDescriptor? {
@@ -122,12 +137,12 @@ public final class ApplicationCatalog {
         guard url.pathExtension.lowercased() == "app", activationPolicy == .regular else { return nil }
         guard let info = infoDictionary(at: url) else { return nil }
         guard let bundleIdentifier = (info["CFBundleIdentifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !bundleIdentifier.isEmpty else { return nil }
+        guard bundleIdentifier.range(of: "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$", options: .regularExpression) != nil else { return nil }
         guard bundleIdentifier != ownBundleIdentifier, bundleIdentifier != "com.nieanshow.sensveil.fixture",
               !bundleIdentifier.lowercased().contains("sensveilfixture") else { return nil }
         if (info["LSBackgroundOnly"] as? Bool) == true || (info["LSUIElement"] as? Bool) == true { return nil }
         let displayName = ((info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent)
-        let iconData = NSWorkspace.shared.icon(forFile: url.path).tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }
-        return ApplicationDescriptor(bundleIdentifier: bundleIdentifier, displayName: displayName, url: url, iconData: iconData, isRunning: isRunning)
+        return ApplicationDescriptor(bundleIdentifier: bundleIdentifier, displayName: displayName, url: url, isRunning: isRunning)
     }
 
     nonisolated private static func infoDictionary(at url: URL) -> [String: Any]? {

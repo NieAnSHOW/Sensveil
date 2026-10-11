@@ -30,6 +30,29 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
         self.isEnabled = isEnabled
         self.sortIndex = sortIndex
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case bundleIdentifier
+        case displayName
+        case iconData
+        case isEnabled
+        case sortIndex
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let bundleIdentifier = try container.decode(String.self, forKey: .bundleIdentifier)
+        guard BundleIdentifierValidator.isValid(bundleIdentifier) else {
+            throw ConfigurationError.invalidBundleIdentifier
+        }
+        self.init(
+            bundleIdentifier: bundleIdentifier,
+            displayName: try container.decode(String.self, forKey: .displayName),
+            iconData: try container.decodeIfPresent(Data.self, forKey: .iconData),
+            isEnabled: try container.decode(Bool.self, forKey: .isEnabled),
+            sortIndex: try container.decode(Int.self, forKey: .sortIndex)
+        )
+    }
 }
 
 public struct ProtectionConfiguration: Codable, Equatable, Sendable {
@@ -120,6 +143,9 @@ public final class ConfigurationStore {
                 throw error
             }
             preserveCorruptFile(data)
+            if error == .invalidBundleIdentifier {
+                throw error
+            }
             throw ConfigurationError.readFailed
         } catch {
             preserveCorruptFile(data)
@@ -133,6 +159,9 @@ public final class ConfigurationStore {
         }
 
         var normalized = configuration
+        guard normalized.applications.allSatisfy({ BundleIdentifierValidator.isValid($0.bundleIdentifier) }) else {
+            throw ConfigurationError.invalidBundleIdentifier
+        }
         normalized.applications = deduplicated(normalized.applications)
         let data: Data
         do {
@@ -213,12 +242,26 @@ public final class ConfigurationStore {
     }
 
     private static func isValidBundleIdentifier(_ value: String) -> Bool {
+        BundleIdentifierValidator.isValid(value)
+    }
+}
+
+private enum BundleIdentifierValidator {
+    static func isValid(_ value: String) -> Bool {
         guard !value.isEmpty, !value.hasPrefix("."), !value.hasSuffix(".") else { return false }
         let components = value.split(separator: ".", omittingEmptySubsequences: false)
         guard components.count >= 2 else { return false }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         return components.allSatisfy { component in
-            !component.isEmpty && component.unicodeScalars.allSatisfy(allowed.contains)
+            !component.isEmpty && component.unicodeScalars.allSatisfy(isAllowedASCII)
+        }
+    }
+
+    private static func isAllowedASCII(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 48...57, 65...90, 97...122, 45:
+            return true
+        default:
+            return false
         }
     }
 }

@@ -76,6 +76,58 @@ final class ProtectionConfigurationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: copies[0]), original)
     }
 
+    @MainActor
+    func testAddingRejectsMalformedOrNonASCIIIdentifiers() throws {
+        let store = ConfigurationStore(appSupportDirectory: temporaryDirectory())
+        for identifier in ["", "example", ".com.example", "com.example.", "com..example", "com.example_bad", "com.\u{00e9}xample", "com.example bad"] {
+            var configuration = ProtectionConfiguration()
+            XCTAssertThrowsError(try store.add(app(identifier), to: &configuration), identifier) { error in
+                XCTAssertEqual(error as? ConfigurationError, .invalidBundleIdentifier)
+            }
+            XCTAssertEqual(configuration, ProtectionConfiguration())
+        }
+        var configuration = ProtectionConfiguration()
+        XCTAssertNoThrow(try store.add(app("com.Example-1.application"), to: &configuration))
+    }
+
+    func testDecodingRejectsInvalidBundleIdentifier() throws {
+        let original = try JSONEncoder().encode(ProtectionConfiguration(applications: [app("com.invalid_id")]))
+        XCTAssertThrowsError(try JSONDecoder().decode(ProtectionConfiguration.self, from: original)) { error in
+            XCTAssertEqual(error as? ConfigurationError, .invalidBundleIdentifier)
+        }
+    }
+
+    @MainActor
+    func testLoadingInvalidIdentifierPreservesOriginalAndReturnsError() throws {
+        let directory = temporaryDirectory()
+        let store = ConfigurationStore(appSupportDirectory: directory)
+        let original = try JSONEncoder().encode(ProtectionConfiguration(applications: [app("com.invalid_id")]))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try original.write(to: store.configURL)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            XCTAssertEqual(error as? ConfigurationError, .invalidBundleIdentifier)
+        }
+        XCTAssertEqual(try Data(contentsOf: store.configURL), original)
+        let copies = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("config.json.corrupt-") }
+        XCTAssertEqual(copies.count, 1)
+        XCTAssertEqual(try Data(contentsOf: copies[0]), original)
+    }
+
+    @MainActor
+    func testSavingInvalidIdentifierPreservesExistingConfiguration() throws {
+        let store = ConfigurationStore(appSupportDirectory: temporaryDirectory())
+        let valid = ProtectionConfiguration(applications: [app("com.example.valid")])
+        try store.save(valid)
+        let original = try Data(contentsOf: store.configURL)
+        XCTAssertThrowsError(try store.save(ProtectionConfiguration(applications: [app("com.invalid_id")]))) { error in
+            XCTAssertEqual(error as? ConfigurationError, .invalidBundleIdentifier)
+        }
+        XCTAssertEqual(try Data(contentsOf: store.configURL), original)
+        XCTAssertEqual(try store.load(), valid)
+    }
+
     private func app(_ bundleIdentifier: String, enabled: Bool = true, sortIndex: Int = 0) -> ProtectedApplication {
         ProtectedApplication(bundleIdentifier: bundleIdentifier, displayName: bundleIdentifier, iconData: nil, isEnabled: enabled, sortIndex: sortIndex)
     }

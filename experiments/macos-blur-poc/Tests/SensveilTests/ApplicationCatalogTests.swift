@@ -4,11 +4,28 @@ import XCTest
 
 final class ApplicationCatalogTests: XCTestCase {
     @MainActor
+    func testControllerKeepsOriginalConfigurationWhenThirdApplicationIsAdded() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(appSupportDirectory: directory)
+        let original = ProtectionConfiguration(applications: [
+            ProtectedApplication(bundleIdentifier: "com.example.one", displayName: "One"),
+            ProtectedApplication(bundleIdentifier: "com.example.two", displayName: "Two"),
+        ])
+        try store.save(original)
+        let controller = SensveilController(configurationStore: store, catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false))
+        controller.addApplication(ApplicationDescriptor(bundleIdentifier: "com.example.three", displayName: "Three", url: directory.appendingPathComponent("Three.app")))
+        XCTAssertEqual(controller.configuration, original)
+        XCTAssertEqual(try store.load(), original)
+        XCTAssertEqual(controller.errorMessage, controller.freeLimitMessage)
+    }
+
+    @MainActor
     func testCatalogSearchDeduplicatesAndSortsInstalledApplications() throws {
         let first = try makeApp(id: "com.example.writer", name: "Writer")
         let second = try makeApp(id: "com.example.writer", name: "Writer Copy")
         let third = try makeApp(id: "com.example.reader", name: "Reader")
-        let catalog = ApplicationCatalog(applicationDirectories: [first.deletingLastPathComponent(), second.deletingLastPathComponent(), third.deletingLastPathComponent()])
+        let catalog = ApplicationCatalog(applicationDirectories: [first.deletingLastPathComponent(), second.deletingLastPathComponent(), third.deletingLastPathComponent()], includesRunningApplications: false)
         let matches = catalog.list(search: "com.example.")
         XCTAssertEqual(matches.count, 2)
         XCTAssertEqual(matches.map(\.displayName), ["Reader", "Writer Copy"])
