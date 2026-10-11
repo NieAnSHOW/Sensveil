@@ -5,11 +5,11 @@ import PoCCore
 @MainActor
 final class DiagnosticWindow: NSWindowController {
     init(controller: PoCController) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 530, height: 390),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 530),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Sensveil PoC Diagnostics"
-        window.minSize = NSSize(width: 530, height: 390)
+        window.minSize = NSSize(width: 580, height: 500)
         window.contentView = NSHostingView(rootView: DiagnosticView(controller: controller))
         window.center()
         super.init(window: window)
@@ -55,6 +55,14 @@ private struct DiagnosticView: View {
                     .disabled(controller.selectedApplication == nil)
             }
             Divider()
+            Text(controller.windowMessage)
+                .font(.system(.body, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Text(controller.measurementMessage).font(.caption).foregroundStyle(.secondary)
+            Text("Calibration: 1 second. Continuous-drag timing and sheet protection are unvalidated.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Label(controller.experimentMessage, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
