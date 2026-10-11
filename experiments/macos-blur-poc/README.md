@@ -27,6 +27,8 @@ The fixture opens three normal, resizable windows. Controls move, resize, minimi
 
 ## Validation record
 
+Current MVP validation (2026-10-12, implementation baseline `d505e43`): all 59 XCTest tests passed; the release script built all three bundles and passed plist and strict ad-hoc signature verification. Explicit product plist lint and strict signature verification also exited 0. These results validate rules and local build integrity, not rendered blur. The product search/add UI has a partial manual observation; 20 focus switches, lifecycle, permission revocation/restoration, multi-screen, Spaces, Intel and macOS 14 remain unmeasured. Product material requests remain “无法保护” while visual evidence is unavailable. See [MVP_VALIDATION](../../docs/engineering/MVP_VALIDATION.md) for commands, the manual matrix and the release boundary. The following older observations belong to the diagnostic PoC and do not establish current product permission or protection results.
+
 Observed build environment on 2026-10-11:
 
 | Field | Observed value |
