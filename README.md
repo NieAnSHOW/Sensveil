@@ -8,7 +8,7 @@ Sensveil 是一款面向 macOS 的本地隐私防窥工具：当指定应用失�
 
 - 免费版最多配置 2 款需要防窥的应用。
 - 付费版不限制配置数量。
-- 新设备首次安装提供 5 天连续试用（共 120 小时）；本地起算是当前推荐方案，仍待评审。
+- 新设备首次使用提供 5 天连续试用（共 120 小时），从首次启动本地起算。
 - 激活码永久激活：¥19.9 绑定 1 台设备，¥32.9 绑定 2 台设备。
 - 首次激活需要联网，激活完成后日常可离线使用。
 
@@ -20,6 +20,7 @@ Sensveil 是一款面向 macOS 的本地隐私防窥工具：当指定应用失�
 - [技术选型](docs/architecture/TECH_SELECTION.md)
 - [许可证协议设计](docs/architecture/LICENSE_PROTOCOL.md)
 - [可行性验证](docs/engineering/FEASIBILITY_SPIKE.md)
+- [macOS PoC 实施计划](docs/superpowers/plans/2026-10-11-macos-blur-poc.md)
 - [开发指南](docs/engineering/DEVELOPMENT.md)
 - [待决策问题](docs/decisions/OPEN_QUESTIONS.md)
 
