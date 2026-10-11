@@ -10,6 +10,20 @@
 
 **Spec:** [PRD](../../product/PRD.md)、[TECH_SELECTION](../../architecture/TECH_SELECTION.md)、[FEASIBILITY_SPIKE](../../engineering/FEASIBILITY_SPIKE.md)。这是可行性阶段，不实现额度、试用、激活服务或正式发行工程。
 
+## Execution Status — 2026-10-11
+
+用户已确认本计划的实验范围并要求继续执行，执行基线提交为 `82d74c1`。当前交付状态与完整验收状态分别记录如下；代码完成不代表整项系统实验通过。逐步复现要求保留在下文，未运行的 GUI/硬件步骤不勾选。
+
+| 任务 | 实现与审阅状态 | 尚待完成 |
+| --- | --- | --- |
+| Task 1 | 核心规则与测试完成，已独立审阅；`715735f` | 系统行为留待后续任务验证 |
+| Task 2 | 两 app、构建脚本和 fixture 完成，已独立审阅；`d266742`、sheet 修复 `a9519eb` | fixture 部分 GUI 已观察；未完成全部权限和窗口操作验证 |
+| Task 3 | 元数据/焦点/生命周期实现完成，已独立审阅；`7215212`；恢复权限后实际匹配 3 个 fixture 标准窗口 | 非标准/未验证窗口问题阻断整个快照，歧义拒绝与完整生命周期未测 |
+| Task 4 | 材料覆盖与诊断实现完成，已独立审阅；`d1f7069` | F-03/F-04/F-05 未测，材料 Gate 为 UNMEASURED |
+| Task 5 | 已整理当前证据和“未具备放行证据”结论；19 核心测试、两 app release/plist/ad-hoc 验证已有记录 | SCK 条件实现不允许启动；完整矩阵、视觉时延/资源/3 人可读性与独立全量评审待完成 |
+
+用户新增的录屏权限诊断已实现为独立例外（`22ca4f9`），未采集像素。用户授权的本地开发者签名构建与验证已通过；系统诊断定位旧 TCC 代码要求不匹配，用户明确授权仅对 PoC 的 Accessibility/ScreenCapture 定向重置并重新授予后，最新 GUI 两项权限均为 Granted。选择 fixture 显示 Matched 3 / CG 4 / AX 4 和 2 项问题；启用实验仍为 Cannot protect、0 覆盖请求。材料 Gate 仍为 UNMEASURED，不更改产品签名/分发要求，不保存个人证书信息、系统日志或代码哈希。详见 [结果记录](../../engineering/POC_RESULTS.md)。
+
 ## Global Constraints
 
 - 首期只考虑 macOS；Windows 暂缓。
@@ -119,7 +133,7 @@
 
 ## Task 3: Observe Public Window Metadata, Focus and Lifecycle
 
-**Files:** Create `Sources/SensveilPoC/{WindowTracker,FocusMonitor,MeasurementRecorder}.swift`；Modify `PoCController.swift`、`DiagnosticWindow.swift`；Extend `ProtectionReducerTests.swift`。
+**Files:** Create `Sources/SensveilPoC/{WindowTracker,FocusMonitor,MeasurementRecorder}.swift`、`Sources/PoCCore/ProcessRegistry.swift` 和 `Tests/PoCCoreTests/ProcessRegistryTests.swift`；Modify `PoCController.swift`、`DiagnosticWindow.swift`；Extend `ProtectionReducerTests.swift`。
 
 **Interfaces:**
 
@@ -127,10 +141,11 @@
 - `@MainActor WindowTracker.snapshot(for target: ProcessInstance) -> WindowSnapshot`、`start(for target: ProcessInstance, onChange: @escaping (WindowSnapshot) -> Void)`、`stop()`；WindowSnapshot 包含唯一映射窗口和 `.missing/.ambiguous/.unsupported` 问题。公开 CG 列表使用 `[.optionOnScreenOnly, .excludeDesktopElements]`，提供 `kCGWindowNumber`、owner PID、bounds、layer、on-screen 信息；AX 负责窗口几何、最小化和通知。
 - AX observer callback 进入 MainActor 后同步；保留 observation/run loop source，关闭时释放。通知不支持则每 1 秒校准；激活、屏幕参数变化、Space 变化、唤醒后立即重枚举。不可无限高频 CG 枚举。
 - `MeasurementRecorder.record(_ event: MeasurementEvent)` 保存单调阶段时间、随机会话内序号、窗口数量与匿名失败类别；不写窗口标题、图像、原始 PID 或本机路径。
+- `ProcessRegistry.observe(pid: Int32, launchDate: Date) -> ProcessInstance` 保持同 PID/启动时间的世代，启动时间变化分配新世代；`remove(pid: Int32)` 使下次观察重新分配。FocusMonitor 与 tracker 共用注册表；缺少可核验启动时间的运行实例不可作为保护目标。
 
-- [ ] **Step 1: 添加生命周期失败测试。** 窗口关闭/最小化/退出须 remove；屏幕布局与系统恢复事件使旧覆盖证据失效；通知缺失后的校准快照可以恢复意图；PID 世代变化清空旧映射。
-- [ ] **Step 2: 运行核心测试并确认新增测试失败。** 失败必须指向未支持的 lifecycle 输入，不能是无关构建故障。
-- [ ] **Step 3: 实现 FocusMonitor 与 WindowTracker。** 唯一关联从 Task 1 matcher 得到；受支持窗口仅限可证明归属的普通顶层窗口，sheet 可验证后纳入，无法映射的弹窗/helper明确异常。
+- [ ] **Step 1: 添加运行实例注册表失败测试。** 同 PID/启动时间保持世代；PID 复用启动时间改变、明确退出后重新观察均产生新世代；不同 PID 不冲突。窗口关闭/最小化/退出、布局/恢复与校准的核心 reducer 行为复用 Task 1 的既有证据，仅新增未覆盖断言。
+- [ ] **Step 2: 运行核心测试并确认新增注册表测试失败。** 失败必须指向尚未实现的注册表接口，不能是无关构建故障。
+- [ ] **Step 3: 实现 ProcessRegistry、FocusMonitor 与 WindowTracker。** 唯一关联从 Task 1 matcher 得到；受支持窗口仅限可证明归属的普通顶层窗口，sheet 可验证后纳入，无法映射的弹窗/helper明确异常。
 - [ ] **Step 4: 接入 MeasurementRecorder 与诊断状态。** 诊断显示匹配/拒绝计数和原因，处理任务取消或退出后不再发布旧快照。
 - [ ] **Step 5: 运行 `swift test --package-path experiments/macos-blur-poc` 与 app 构建脚本。** 期望逻辑测试与两 executable 均通过。
 - [ ] **Step 6: 用 fixture 执行枚举与生命周期检查。** 覆盖三个窗口、重复几何歧义、sheet、创建关闭、最小化、移动缩放、退出重启；期望歧义被拒绝且无人为补 ID，诊断不称保护成功。双屏/睡眠等不可用条件记未测。
@@ -178,6 +193,10 @@
 - [ ] **Step 8: 请求独立全量评审。** 评审者核对代码/证据/未测项和对外状态文案；有重要问题先修复再复检，通过后提交 `docs: record macOS blur PoC evidence and decision`（如执行 SCK，代码使用单独 `feat:` 提交）。
 
 ## Execution Review Gate
+
+### 2026-10-11 手动权限诊断补充
+
+用户在实验授权排查中明确询问能否直接请求录屏权限。允许在 PoC 诊断页单独提供用户触发的 `CGRequestScreenCaptureAccess()` 入口，并通过 `CGPreflightScreenCaptureAccess()` 刷新实际状态；不自动请求、不捕获像素、不以授权成功表示保护已生效。此入口是用户要求的权限诊断，不代表材料 Gate 通过，也不提前实现 SCK 捕获路线。
 
 本计划完成后的第一步是让用户评审实验范围与执行安排，等待其确认计划；用户 AGENTS 已要求委派，推荐保持 subagent-driven，不重复询问 native/subagent 二选一。确认后以逐任务实施、逐任务独立 review、最后全量 review 的方式推进。
 
