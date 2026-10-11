@@ -11,7 +11,9 @@ swift test --package-path experiments/macos-blur-poc
 bash experiments/macos-blur-poc/scripts/build-apps.sh
 ```
 
-The script performs a release build and wraps the current SwiftPM binaries in `.build/apps/SensveilPoC.app` and `.build/apps/SensveilFixture.app`. Both bundles are ad-hoc signed and verified. Their fixed experiment identifiers are `com.nieanshow.sensveil.poc` and `com.nieanshow.sensveil.fixture`; neither is the future product identity. Ad-hoc signing is not Developer ID signing, notarization, production TCC identity stability, or trust across machines. Rebuilds may change TCC behavior. Record such changes; do not reset permissions automatically.
+The script performs a release build and wraps the current SwiftPM binaries in `.build/apps/Sensveil.app`, `.build/apps/SensveilPoC.app` and `.build/apps/SensveilFixture.app`. Sensveil is the menu bar product shell (`LSUIElement=true`) and keeps running when its management window closes. All bundles are ad-hoc signed and verified. The product bundle identifier is `com.nieanshow.sensveil`; the two fixed experiment identifiers are `com.nieanshow.sensveil.poc` and `com.nieanshow.sensveil.fixture`. Ad-hoc signing is not Developer ID signing, notarization, production TCC identity stability, or trust across machines. Rebuilds may change TCC behavior. Record such changes; do not reset permissions automatically.
+
+The product shell is Chinese-first and keeps protection fail-closed: a submitted material request is shown as “无法保护” until visual blur evidence is verified. Accessibility requests are initiated only by the management window button. Screen Recording is an optional diagnostic probe and is not required for protection. Login launch remains visibly disabled in this first release.
 
 The default signing identity is ad-hoc (`-`). For a user-authorized local TCC identity check only, set `SENSVEIL_SIGNING_IDENTITY` in the shell before running the same script. Keep certificate names and identifiers out of source control. A local development signature is not Developer ID signing, notarization, or public distribution evidence.
 
@@ -24,6 +26,8 @@ The diagnostic panel separately preflights Accessibility and Screen Recording at
 The fixture opens three normal, resizable windows. Controls move, resize, minimize, reopen the three windows, open a closable sheet, and create two identical overlapping windows. The Fixture menu also reopens windows after all are closed. All displayed account data is synthetic, including the invalid phone number and fictional balances. The diagnostic panel is itself a normal foreground window usable as an occluder.
 
 ## Validation record
+
+Current MVP validation (2026-10-12, implementation baseline `d505e43`): all 59 XCTest tests passed; the release script built all three bundles and passed plist and strict ad-hoc signature verification. Explicit product plist lint and strict signature verification also exited 0. These results validate rules and local build integrity, not rendered blur. The product search/add UI has a partial manual observation; 20 focus switches, lifecycle, permission revocation/restoration, multi-screen, Spaces, Intel and macOS 14 remain unmeasured. Product material requests remain “无法保护” while visual evidence is unavailable. See [MVP_VALIDATION](../../docs/engineering/MVP_VALIDATION.md) for commands, the manual matrix and the release boundary. The following older observations belong to the diagnostic PoC and do not establish current product permission or protection results.
 
 Observed build environment on 2026-10-11:
 

@@ -10,12 +10,21 @@ binary_path="$(swift build --configuration release --show-bin-path)"
 apps_path="$experiment_root/.build/apps"
 signing_identity="${SENSVEIL_SIGNING_IDENTITY:--}"
 mkdir -p "$apps_path"
+iconset_path="$experiment_root/.build/Sensveil.iconset"
+swift "$experiment_root/scripts/build-icon.swift" "$iconset_path"
+iconutil --convert icns --output "$experiment_root/.build/Sensveil.icns" "$iconset_path"
 
-for name in SensveilPoC SensveilFixture; do
+for name in Sensveil SensveilPoC SensveilFixture; do
     app_path="$apps_path/$name.app"
     mkdir -p "$app_path/Contents/MacOS"
     cp "$experiment_root/Resources/$name-Info.plist" "$app_path/Contents/Info.plist"
-    cp "$binary_path/$name" "$app_path/Contents/MacOS/$name"
+    binary_name="$name"
+    if [[ "$name" == Sensveil ]]; then binary_name=SensveilApp; fi
+    cp "$binary_path/$binary_name" "$app_path/Contents/MacOS/$name"
+    if [[ "$name" == Sensveil ]]; then
+        mkdir -p "$app_path/Contents/Resources"
+        cp "$experiment_root/.build/Sensveil.icns" "$app_path/Contents/Resources/Sensveil.icns"
+    fi
     chmod +x "$app_path/Contents/MacOS/$name"
     plutil -lint "$app_path/Contents/Info.plist"
     codesign --force --sign "$signing_identity" "$app_path"
