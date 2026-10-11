@@ -7,12 +7,14 @@ let package = Package(
     products: [
         .library(name: "PoCCore", targets: ["PoCCore"]),
         .library(name: "Sensveil", targets: ["Sensveil"]),
+        .executable(name: "SensveilApp", targets: ["SensveilApp"]),
         .executable(name: "SensveilPoC", targets: ["SensveilPoC"]),
         .executable(name: "SensveilFixture", targets: ["SensveilFixture"])
     ],
     targets: [
         .target(name: "PoCCore"),
         .target(name: "Sensveil", dependencies: ["PoCCore"]),
+        .executableTarget(name: "SensveilApp", dependencies: ["Sensveil"]),
         .executableTarget(name: "SensveilPoC", dependencies: ["PoCCore"]),
         .executableTarget(name: "SensveilFixture"),
         .testTarget(name: "PoCCoreTests", dependencies: ["PoCCore"]),
