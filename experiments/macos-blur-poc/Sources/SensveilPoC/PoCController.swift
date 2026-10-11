@@ -48,8 +48,9 @@ final class PoCController: ObservableObject {
             guard let self else { return }
             self.frontmostInstance = event.frontmost
             self.measurements.record(MeasurementEvent(phase: .focusReceived, receivedAt: event.receivedAt))
-            // Remove immediately on foreground changes before any fresh window enumeration.
-            self.notifyStateChange()
+            // Activation removes foreground overlays before enumeration. Lifecycle/layout
+            // events must invalidate their stale snapshot before attempting reconciliation.
+            if case .activation = event.kind { self.notifyStateChange() }
             switch event.kind {
             case .sleep:
                 self.isSuspended = true
