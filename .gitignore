@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager / Xcode
+.build/
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.cer
+*.crt
+*.key
+*.pem
+
+# Local tooling and editor files
+.idea/
+.vscode/
+.swiftpm/
+
+# Coverage and test artifacts
+coverage/
+*.xcresult
