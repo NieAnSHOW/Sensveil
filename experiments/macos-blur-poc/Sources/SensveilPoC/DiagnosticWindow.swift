@@ -43,11 +43,14 @@ private struct DiagnosticView: View {
                 permissionRow("Accessibility", state: controller.accessibilityPermission) {
                     controller.requestAccessibility()
                 }
-            }
-            HStack {
-                Button { controller.refreshPermissions() } label: {
-                    Label("Refresh permissions", systemImage: "arrow.clockwise")
+                permissionRow("Screen Recording", state: controller.screenCapturePermission) {
+                    controller.requestScreenCapture()
                 }
+            }
+            Text("Screen Recording: permission probe only; no pixel capture. Permission does not validate protection.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
                 Spacer()
                 Toggle("Experiment", isOn: Binding(
                     get: { controller.isExperimentEnabled },
@@ -82,6 +85,11 @@ private struct DiagnosticView: View {
             Text(title)
             Text(permissionLabel(state)).foregroundStyle(state == .granted ? Color.green : Color.secondary)
             Button("Request", action: request).disabled(state == .granted)
+            Button { controller.refreshPermissions() } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Refresh \(title) permission")
+            .accessibilityLabel("Refresh \(title) permission")
         }
     }
 

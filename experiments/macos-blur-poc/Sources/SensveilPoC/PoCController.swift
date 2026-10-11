@@ -11,6 +11,7 @@ final class PoCController: ObservableObject {
     @Published private(set) var selectedApplication: NSRunningApplication?
     @Published private(set) var isExperimentEnabled = false
     @Published private(set) var accessibilityPermission: PermissionState = .unknown
+    @Published private(set) var screenCapturePermission: PermissionState = .unknown
     @Published private(set) var targetMessage = "No target selected"
     @Published private(set) var experimentMessage = "Experiment not validated"
     @Published private(set) var windowMessage = "No window snapshot"
@@ -160,6 +161,7 @@ final class PoCController: ObservableObject {
     func refreshPermissions() {
         let previousPermission = accessibilityPermission
         accessibilityPermission = permissions.accessibilityStatus()
+        screenCapturePermission = permissions.screenCaptureStatus()
         if let application = selectedApplication {
             guard Self.isVerifiedFixture(application), let launchDate = application.launchDate,
                   registry.observe(pid: application.processIdentifier, launchDate: launchDate) == selectedInstance else {
@@ -176,6 +178,11 @@ final class PoCController: ObservableObject {
 
     func requestAccessibility() {
         _ = permissions.requestAccessibility()
+        refreshPermissions()
+    }
+
+    func requestScreenCapture() {
+        _ = permissions.requestScreenCapture()
         refreshPermissions()
     }
 
