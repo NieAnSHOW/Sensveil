@@ -67,6 +67,8 @@ final class ApplicationCatalogTests: XCTestCase {
         XCTAssertNil(ApplicationCatalog.descriptor(at: helper))
         XCTAssertNil(ApplicationCatalog.descriptor(at: own, ownBundleIdentifier: "com.example.Sensveil"))
         XCTAssertNil(ApplicationCatalog.descriptor(at: missing))
+        let padded = try makeApp(id: " com.example.padded ", name: "Padded")
+        XCTAssertNil(ApplicationCatalog.descriptor(at: padded))
     }
 
     private func makeApp(id: String?, name: String, extra: [String: Any] = [:]) throws -> URL {

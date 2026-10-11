@@ -136,7 +136,7 @@ public final class ApplicationCatalog {
     ) -> ApplicationDescriptor? {
         guard url.pathExtension.lowercased() == "app", activationPolicy == .regular else { return nil }
         guard let info = infoDictionary(at: url) else { return nil }
-        guard let bundleIdentifier = (info["CFBundleIdentifier"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !bundleIdentifier.isEmpty else { return nil }
+        guard let bundleIdentifier = info["CFBundleIdentifier"] as? String, !bundleIdentifier.isEmpty else { return nil }
         guard BundleIdentifierValidator.isValid(bundleIdentifier) else { return nil }
         guard bundleIdentifier != ownBundleIdentifier, bundleIdentifier != "com.nieanshow.sensveil.fixture",
               !bundleIdentifier.lowercased().contains("sensveilfixture") else { return nil }
