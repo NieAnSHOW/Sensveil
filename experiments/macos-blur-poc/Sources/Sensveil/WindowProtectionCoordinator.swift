@@ -6,7 +6,7 @@ import PoCCore
 /// the material adapter. The adapter's requestSubmitted result is deliberately
 /// kept unverified; no public AppKit API proves composited pixels are private.
 @MainActor
-final class WindowProtectionCoordinator {
+public final class WindowProtectionCoordinator {
     struct RunningTarget: Equatable {
         let bundleIdentifier: String
         let instance: ProcessInstance
@@ -42,7 +42,7 @@ final class WindowProtectionCoordinator {
 
     /// Convenience production runtime. All adapters are initialized on the main
     /// actor and share one ProcessRegistry to prevent PID reuse confusion.
-    convenience init() {
+    public convenience init() {
         let registry = ProcessRegistry()
         let focus = FocusMonitor(registry: registry)
         let tracker = WindowTracker(registry: registry)
@@ -50,7 +50,7 @@ final class WindowProtectionCoordinator {
         self.init(runtime: AdapterRuntime(focus: focus, tracker: tracker, overlays: overlays, registry: registry))
     }
 
-    func start(configuration: ProtectionConfiguration) {
+    public func start(configuration: ProtectionConfiguration) {
         stop()
         self.configuration = configuration
         isPaused = configuration.isGloballyPaused
@@ -62,7 +62,7 @@ final class WindowProtectionCoordinator {
         reconcile()
     }
 
-    func stop() {
+    public func stop() {
         guard isStarted else { return }
         runtime.stop()
         runtime.removeAllOverlays()
@@ -74,7 +74,7 @@ final class WindowProtectionCoordinator {
         isStarted = false
     }
 
-    func setConfiguration(_ configuration: ProtectionConfiguration) {
+    public func setConfiguration(_ configuration: ProtectionConfiguration) {
         self.configuration = configuration
         isPaused = configuration.isGloballyPaused
         guard isStarted else { return }
@@ -84,7 +84,7 @@ final class WindowProtectionCoordinator {
         reconcile()
     }
 
-    func setGlobalPause(_ paused: Bool) {
+    public func setGlobalPause(_ paused: Bool) {
         isPaused = paused
         configuration.isGloballyPaused = paused
         guard isStarted else { return }
@@ -92,15 +92,15 @@ final class WindowProtectionCoordinator {
         reconcile()
     }
 
-    func status(for application: ProtectedApplication) -> ProtectionStatus {
+    public func status(for application: ProtectedApplication) -> ProtectionStatus {
         status(for: application.bundleIdentifier)
     }
 
-    func status(for bundleIdentifier: String) -> ProtectionStatus {
+    public func status(for bundleIdentifier: String) -> ProtectionStatus {
         statuses[bundleIdentifier] ?? .notRunning
     }
 
-    func removeAllOverlays() {
+    public func removeAllOverlays() {
         runtime.removeAllOverlays()
     }
 
@@ -246,7 +246,7 @@ private final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
     let registry: ProcessRegistry
     init(focus: FocusMonitor, tracker: WindowTracker, overlays: MaterialOverlayCoordinator, registry: ProcessRegistry) { self.focus = focus; self.trackers = [:]; self.overlays = overlays; self.registry = registry }
     func start(onEvent: @escaping (FocusEvent) -> Void) { focus.start(onEvent: onEvent) }
-    func stop() { focus.stop(); trackers.values.forEach { $0.stop() }; trackers.removeAll() }
+    public func stop() { focus.stop(); trackers.values.forEach { $0.stop() }; trackers.removeAll() }
     func currentFrontmost() -> ProcessInstance? { focus.currentInstance() }
     func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] {
         NSWorkspace.shared.runningApplications.compactMap { app in
@@ -272,5 +272,5 @@ private final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         let layout = ScreenLayout(primaryScreenFrame: primary.frame, screenFrames: screens.map(\.frame))
         return overlays.reconcile(intents, windows: windows, screenLayout: layout)
     }
-    func removeAllOverlays() { overlays.removeAll() }
+    public func removeAllOverlays() { overlays.removeAll() }
 }
