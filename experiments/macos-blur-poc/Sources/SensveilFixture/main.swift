@@ -74,8 +74,8 @@ final class FixtureAppDelegate: NSObject, NSApplicationDelegate {
         sheet.contentView = NSHostingView(rootView: VStack(alignment: .leading, spacing: 20) {
             Text("SYNTHETIC TEST DATA").font(.headline).foregroundStyle(.red)
             Text("Sheet sample: 000-0000-0001").font(.title3)
-            Button("Close sheet") { [weak self, weak parent] in
-                guard let parent else { return }
+            Button("Close sheet") { [weak self, weak parent, weak sheet] in
+                guard let parent, let sheet else { return }
                 parent.endSheet(sheet)
                 self?.sheets.removeValue(forKey: parent.windowNumber)
             }
