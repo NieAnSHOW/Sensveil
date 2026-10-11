@@ -119,7 +119,7 @@
 
 ## Task 3: Observe Public Window Metadata, Focus and Lifecycle
 
-**Files:** Create `Sources/SensveilPoC/{WindowTracker,FocusMonitor,MeasurementRecorder}.swift`；Modify `PoCController.swift`、`DiagnosticWindow.swift`；Extend `ProtectionReducerTests.swift`。
+**Files:** Create `Sources/SensveilPoC/{WindowTracker,FocusMonitor,MeasurementRecorder}.swift`、`Sources/PoCCore/ProcessRegistry.swift` 和 `Tests/PoCCoreTests/ProcessRegistryTests.swift`；Modify `PoCController.swift`、`DiagnosticWindow.swift`；Extend `ProtectionReducerTests.swift`。
 
 **Interfaces:**
 
@@ -127,10 +127,11 @@
 - `@MainActor WindowTracker.snapshot(for target: ProcessInstance) -> WindowSnapshot`、`start(for target: ProcessInstance, onChange: @escaping (WindowSnapshot) -> Void)`、`stop()`；WindowSnapshot 包含唯一映射窗口和 `.missing/.ambiguous/.unsupported` 问题。公开 CG 列表使用 `[.optionOnScreenOnly, .excludeDesktopElements]`，提供 `kCGWindowNumber`、owner PID、bounds、layer、on-screen 信息；AX 负责窗口几何、最小化和通知。
 - AX observer callback 进入 MainActor 后同步；保留 observation/run loop source，关闭时释放。通知不支持则每 1 秒校准；激活、屏幕参数变化、Space 变化、唤醒后立即重枚举。不可无限高频 CG 枚举。
 - `MeasurementRecorder.record(_ event: MeasurementEvent)` 保存单调阶段时间、随机会话内序号、窗口数量与匿名失败类别；不写窗口标题、图像、原始 PID 或本机路径。
+- `ProcessRegistry.observe(pid: Int32, launchDate: Date) -> ProcessInstance` 保持同 PID/启动时间的世代，启动时间变化分配新世代；`remove(pid: Int32)` 使下次观察重新分配。FocusMonitor 与 tracker 共用注册表；缺少可核验启动时间的运行实例不可作为保护目标。
 
-- [ ] **Step 1: 添加生命周期失败测试。** 窗口关闭/最小化/退出须 remove；屏幕布局与系统恢复事件使旧覆盖证据失效；通知缺失后的校准快照可以恢复意图；PID 世代变化清空旧映射。
-- [ ] **Step 2: 运行核心测试并确认新增测试失败。** 失败必须指向未支持的 lifecycle 输入，不能是无关构建故障。
-- [ ] **Step 3: 实现 FocusMonitor 与 WindowTracker。** 唯一关联从 Task 1 matcher 得到；受支持窗口仅限可证明归属的普通顶层窗口，sheet 可验证后纳入，无法映射的弹窗/helper明确异常。
+- [ ] **Step 1: 添加运行实例注册表失败测试。** 同 PID/启动时间保持世代；PID 复用启动时间改变、明确退出后重新观察均产生新世代；不同 PID 不冲突。窗口关闭/最小化/退出、布局/恢复与校准的核心 reducer 行为复用 Task 1 的既有证据，仅新增未覆盖断言。
+- [ ] **Step 2: 运行核心测试并确认新增注册表测试失败。** 失败必须指向尚未实现的注册表接口，不能是无关构建故障。
+- [ ] **Step 3: 实现 ProcessRegistry、FocusMonitor 与 WindowTracker。** 唯一关联从 Task 1 matcher 得到；受支持窗口仅限可证明归属的普通顶层窗口，sheet 可验证后纳入，无法映射的弹窗/helper明确异常。
 - [ ] **Step 4: 接入 MeasurementRecorder 与诊断状态。** 诊断显示匹配/拒绝计数和原因，处理任务取消或退出后不再发布旧快照。
 - [ ] **Step 5: 运行 `swift test --package-path experiments/macos-blur-poc` 与 app 构建脚本。** 期望逻辑测试与两 executable 均通过。
 - [ ] **Step 6: 用 fixture 执行枚举与生命周期检查。** 覆盖三个窗口、重复几何歧义、sheet、创建关闭、最小化、移动缩放、退出重启；期望歧义被拒绝且无人为补 ID，诊断不称保护成功。双屏/睡眠等不可用条件记未测。
