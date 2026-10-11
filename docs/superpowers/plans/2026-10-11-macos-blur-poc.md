@@ -10,6 +10,20 @@
 
 **Spec:** [PRD](../../product/PRD.md)、[TECH_SELECTION](../../architecture/TECH_SELECTION.md)、[FEASIBILITY_SPIKE](../../engineering/FEASIBILITY_SPIKE.md)。这是可行性阶段，不实现额度、试用、激活服务或正式发行工程。
 
+## Execution Status — 2026-10-11
+
+用户已确认本计划的实验范围并要求继续执行，执行基线提交为 `82d74c1`。当前交付状态与完整验收状态分别记录如下；代码完成不代表整项系统实验通过。逐步复现要求保留在下文，未运行的 GUI/硬件步骤不勾选。
+
+| 任务 | 实现与审阅状态 | 尚待完成 |
+| --- | --- | --- |
+| Task 1 | 核心规则与测试完成，已独立审阅；`715735f` | 系统行为留待后续任务验证 |
+| Task 2 | 两 app、构建脚本和 fixture 完成，已独立审阅；`d266742`、sheet 修复 `a9519eb` | fixture 部分 GUI 已观察；未完成全部权限和窗口操作验证 |
+| Task 3 | 元数据/焦点/生命周期实现完成，已独立审阅；`7215212` | AX 尚未实际授予，真实映射与完整生命周期未测 |
+| Task 4 | 材料覆盖与诊断实现完成，已独立审阅；`d1f7069` | F-03/F-04/F-05 未测，材料 Gate 为 UNMEASURED |
+| Task 5 | 已整理当前证据和“未具备放行证据”结论；19 核心测试、两 app release/plist/ad-hoc 验证已有记录 | SCK 条件实现不允许启动；完整矩阵、视觉时延/资源/3 人可读性与独立全量评审待完成 |
+
+用户新增的录屏权限诊断已实现为独立例外（`22ca4f9`），请求/授权状态已观察，未采集像素。用户随后允许尝试本地开发者签名来排查 TCC 身份，仅处理被忽略的实验 app 产物；实际 AX 生效仍待验证，不更改产品签名/分发要求，不保存个人证书名称或标识。详见 [结果记录](../../engineering/POC_RESULTS.md)。
+
 ## Global Constraints
 
 - 首期只考虑 macOS；Windows 暂缓。
@@ -179,6 +193,10 @@
 - [ ] **Step 8: 请求独立全量评审。** 评审者核对代码/证据/未测项和对外状态文案；有重要问题先修复再复检，通过后提交 `docs: record macOS blur PoC evidence and decision`（如执行 SCK，代码使用单独 `feat:` 提交）。
 
 ## Execution Review Gate
+
+### 2026-10-11 手动权限诊断补充
+
+用户在实验授权排查中明确询问能否直接请求录屏权限。允许在 PoC 诊断页单独提供用户触发的 `CGRequestScreenCaptureAccess()` 入口，并通过 `CGPreflightScreenCaptureAccess()` 刷新实际状态；不自动请求、不捕获像素、不以授权成功表示保护已生效。此入口是用户要求的权限诊断，不代表材料 Gate 通过，也不提前实现 SCK 捕获路线。
 
 本计划完成后的第一步是让用户评审实验范围与执行安排，等待其确认计划；用户 AGENTS 已要求委派，推荐保持 subagent-driven，不重复询问 native/subagent 二选一。确认后以逐任务实施、逐任务独立 review、最后全量 review 的方式推进。
 

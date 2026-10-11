@@ -2,13 +2,26 @@
 
 ## 当前状态
 
-Sensveil 尚未建立正式 macOS 应用工程，当前仓库只包含产品与工程文档。因此，现阶段没有可声称通过的 `build`、`test` 或发布命令，也不应安装依赖来制造占位工程。
+Sensveil 尚未建立正式产品 macOS 应用工程。仓库包含产品与工程文档，以及 `experiments/macos-blur-poc/` 下的独立 Swift 6/AppKit 实验。该实验的核心测试和两 app 构建已在当前 arm64 主机执行，真实保护仍为 [未具备放行证据](POC_RESULTS.md)。正式产品的发布、Developer ID 签名和公证流程尚未建立。
+
+## 可重复的实验命令
+
+在仓库根目录执行：
+
+```sh
+swift test --package-path experiments/macos-blur-poc
+bash experiments/macos-blur-poc/scripts/build-apps.sh
+```
+
+测试验证纯窗口匹配、坐标、状态和进程世代规则。构建脚本生成 `experiments/macos-blur-poc/.build/apps/` 下的 `SensveilPoC.app` 与 `SensveilFixture.app`，检查 plist，并执行 ad-hoc 签名与验证。实验无第三方依赖，需要可用的 Xcode/Swift/macOS SDK；最低构建目标为 macOS 14.0，macOS 14 与 Intel 的实际运行仍未测。
+
+手动启动两 app，只使用 fixture 的虚构数据。PoC 初始关闭，目标须显式选择；权限仅由用户按钮主动请求。独立录屏权限诊断不采集像素，也不放行 SCK 路线。ad-hoc 重编可能改变 TCC 身份，应记录最终二进制实际 preflight 结果，不自动重置权限。详细步骤见 [实验 README](../../experiments/macos-blur-poc/README.md)。
 
 ## 计划工具链
 
 首期技术方向为原生 Swift 6，结合 SwiftUI 和 AppKit；建议 macOS 14 作为最低系统门槛，最终门槛待可行性验证和产品评审确定。工程化前需要确认 Xcode、Swift、签名、公证和分发渠道的版本策略。
 
-## 开始实现前的验证
+## 建立正式产品工程前的验证
 
 应先完成 [可行性验证](FEASIBILITY_SPIKE.md)，至少覆盖：
 
@@ -28,7 +41,7 @@ Sensveil 尚未建立正式 macOS 应用工程，当前仓库只包含产品与�
 git diff --check
 ```
 
-同时检查 README 中的文档链接可访问。正式工程建立后，再在此补充可复制的 Xcode 构建、单元测试、UI 测试、签名、公证和打包命令。
+同时检查 README 中的文档链接可访问。PoC 构建和核心测试不能代替视觉验收；实际证据与未测项应更新到 POC_RESULTS。正式产品工程建立后，再补充其 Xcode 构建、UI 测试、签名、公证和发布命令。
 
 ## 许可证开发注意事项
 

@@ -2,7 +2,7 @@
 
 Sensveil 是一款面向 macOS 的本地隐私防窥工具：当指定应用失去焦点时，Sensveil 会在其窗口上显示模糊保护层；应用重新获得焦点后，保护层会移除。模糊是产品的核心保护方式；如果无法可靠地应用模糊，Sensveil 应明确显示“无法保护”。
 
-项目当前处于需求分析与技术可行性验证阶段，尚无正式可下载版本、应用工程或稳定的 build/test 命令。首期目标平台为 macOS，Windows 暂缓。
+项目当前处于技术可行性验证阶段，尚无正式可下载版本或正式产品应用工程。仓库已有独立的 [macOS PoC 实验](experiments/macos-blur-poc/README.md)，提供可重复的核心测试和实验 app 构建命令；当前结论为 [未具备放行证据](docs/engineering/POC_RESULTS.md)，实际模糊保护仍待验证。首期目标平台为 macOS，Windows 暂缓。
 
 ## 预期产品规则
 
@@ -21,6 +21,8 @@ Sensveil 是一款面向 macOS 的本地隐私防窥工具：当指定应用失�
 - [许可证协议设计](docs/architecture/LICENSE_PROTOCOL.md)
 - [可行性验证](docs/engineering/FEASIBILITY_SPIKE.md)
 - [macOS PoC 实施计划](docs/superpowers/plans/2026-10-11-macos-blur-poc.md)
+- [macOS PoC 实验与运行说明](experiments/macos-blur-poc/README.md)
+- [macOS PoC 结果与未测清单](docs/engineering/POC_RESULTS.md)
 - [开发指南](docs/engineering/DEVELOPMENT.md)
 - [待决策问题](docs/decisions/OPEN_QUESTIONS.md)
 
