@@ -27,15 +27,28 @@ final class PoCController: ObservableObject {
     private lazy var focusMonitor = FocusMonitor(registry: registry)
     private lazy var windowTracker = WindowTracker(registry: registry)
     let measurements = MeasurementRecorder()
+    private lazy var overlayCoordinator = MaterialOverlayCoordinator(measurements: measurements)
     private var diagnosticWindow: DiagnosticWindow?
     private var permissionPoll: Task<Void, Never>?
+    private var displayOptionsObserver: NSObjectProtocol?
+    private var appearanceObserver: NSKeyValueObservation?
 
     init() {
         refreshPermissions()
+        displayOptionsObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.materialSettingsChanged() }
+        }
+        appearanceObserver = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.materialSettingsChanged() }
+        }
         focusMonitor.start { [weak self] event in
             guard let self else { return }
             self.frontmostInstance = event.frontmost
             self.measurements.record(MeasurementEvent(phase: .focusReceived, receivedAt: event.receivedAt))
+            // Remove immediately on foreground changes before any fresh window enumeration.
+            self.notifyStateChange()
             switch event.kind {
             case .sleep:
                 self.isSuspended = true
@@ -55,7 +68,7 @@ final class PoCController: ObservableObject {
             default: self.windowTracker.refresh()
             }
             self.updateMeasurementMessage()
-            self.onStateChange?()
+            self.notifyStateChange()
         }
         permissionPoll = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -76,6 +89,13 @@ final class PoCController: ObservableObject {
         permissionPoll = nil
         focusMonitor.stop()
         windowTracker.stop()
+        if let displayOptionsObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(displayOptionsObserver)
+        }
+        displayOptionsObserver = nil
+        appearanceObserver?.invalidate()
+        appearanceObserver = nil
+        isExperimentEnabled = false
         invalidateSnapshot()
         onStateChange = nil
     }
@@ -102,7 +122,7 @@ final class PoCController: ObservableObject {
         targetMessage = "Sensveil Fixture (verified running instance)"
         invalidateSnapshot()
         restartTracking()
-        onStateChange?()
+        notifyStateChange()
     }
 
     private func restartTracking() {
@@ -110,7 +130,7 @@ final class PoCController: ObservableObject {
         windowTracker.start(for: selectedInstance) { [weak self] snapshot in
             guard let self, self.selectedInstance == snapshot.target else { return }
             self.latestSnapshot = snapshot
-            self.requiresRevalidation = snapshot.issues.contains { [.accessibilityUnavailable, .processUnavailable, .metadataUnavailable].contains($0.kind) }
+            self.requiresRevalidation = !snapshot.issues.isEmpty
             let accepted = snapshot.windows.count
             let rejected = snapshot.issues.count
             let reasons = Set(snapshot.issues.map(\.reason)).sorted().joined(separator: "; ")
@@ -120,7 +140,7 @@ final class PoCController: ObservableObject {
             self.measurements.record(MeasurementEvent(phase: .snapshotReady, windowCount: accepted,
                                                        failures: snapshot.issues.map(\.kind)))
             self.updateMeasurementMessage()
-            self.onStateChange?()
+            self.notifyStateChange()
         }
     }
 
@@ -132,8 +152,9 @@ final class PoCController: ObservableObject {
             }
         }
         isExperimentEnabled = enabled
+        overlayCoordinator.removeAll()
         experimentMessage = enabled ? "Experiment enabled; protection not validated" : "Experiment not validated"
-        onStateChange?()
+        notifyStateChange()
     }
 
     func refreshPermissions() {
@@ -150,7 +171,7 @@ final class PoCController: ObservableObject {
             invalidateSnapshot()
             windowTracker.refresh()
         }
-        onStateChange?()
+        notifyStateChange()
     }
 
     func requestAccessibility() {
@@ -168,21 +189,72 @@ final class PoCController: ObservableObject {
         windowMessage = "No window snapshot"
         experimentMessage = "Experiment not validated"
         invalidateSnapshot()
-        onStateChange?()
+        notifyStateChange()
     }
 
     private func invalidateSnapshot() {
+        overlayCoordinator.removeAll()
         latestSnapshot = nil
         requiresRevalidation = true
         measurements.record(MeasurementEvent(phase: .invalidated))
         updateMeasurementMessage()
+        notifyStateChange()
+    }
+
+    private func materialSettingsChanged() {
+        invalidateSnapshot()
+        windowTracker.refresh()
+    }
+
+    private func notifyStateChange() {
+        reconcileOverlays()
         onStateChange?()
+    }
+
+    private func reconcileOverlays() {
+        guard isExperimentEnabled else {
+            overlayCoordinator.removeAll()
+            experimentMessage = "Experiment not validated"
+            return
+        }
+        let windows = latestSnapshot?.windows ?? []
+        let selected = Set(selectedInstance.map { [$0] } ?? [])
+        let intents = ProtectionReducer.reduce(ProtectionInput(
+            frontmost: frontmostInstance, selected: selected, windows: windows,
+            previousOverlayKeys: overlayCoordinator.overlayKeys, permissions: [accessibilityPermission],
+            isSuspended: isSuspended, requiresRevalidation: requiresRevalidation))
+        guard let primaryScreen = NSScreen.screens.first else {
+            overlayCoordinator.removeAll()
+            experimentMessage = "Cannot protect: display layout is unavailable"
+            return
+        }
+        let observations = overlayCoordinator.reconcile(intents, windows: windows,
+            screenLayout: ScreenLayout(primaryScreenFrame: primaryScreen.frame,
+                                       screenFrames: NSScreen.screens.map(\.frame)))
+        let failures = observations.values.compactMap { observation -> String? in
+            if case .failed(let reason) = observation { return reason }
+            return nil
+        }
+        if !failures.isEmpty {
+            experimentMessage = "Cannot protect: " + Set(failures).sorted().joined(separator: "; ")
+        } else if observations.values.contains(.requestSubmitted) {
+            experimentMessage = "Experimental overlay active (unverified)"
+        } else if frontmostInstance == selectedInstance, selectedInstance != nil {
+            experimentMessage = "Fixture foreground; overlays removed (experiment unverified)"
+        } else if requiresRevalidation {
+            experimentMessage = "Cannot protect: window or material evidence requires revalidation"
+        } else {
+            experimentMessage = "Cannot protect: no eligible visible fixture windows"
+        }
+        updateMeasurementMessage()
     }
 
     private func updateMeasurementMessage() {
         let matched = measurements.phaseCounts[.snapshotReady, default: 0]
         let invalidated = measurements.phaseCounts[.invalidated, default: 0]
-        measurementMessage = "In-memory phases: \(measurements.entries.count) · snapshots \(matched) · invalidations \(invalidated)"
+        let requested = measurements.phaseCounts[.overlayRequested, default: 0]
+        let removed = measurements.phaseCounts[.overlayRemoved, default: 0]
+        measurementMessage = "In-memory phases: \(measurements.entries.count) · snapshots \(matched) · invalidations \(invalidated)\nOverlay API requests \(requested) · removals \(removed); presentation timing unmeasured"
     }
 
     private static func isVerifiedFixture(_ application: NSRunningApplication) -> Bool {

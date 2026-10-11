@@ -22,7 +22,8 @@ private struct DiagnosticView: View {
     @ObservedObject var controller: PoCController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        ScrollView {
+          VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Label("Sensveil PoC", systemImage: "eye.slash")
                     .font(.title2.weight(.semibold))
@@ -60,6 +61,9 @@ private struct DiagnosticView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             Text(controller.measurementMessage).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Material: hudWindow / active / behindWindow")
+                .font(.caption).foregroundStyle(.secondary)
             Text("Calibration: 1 second. Continuous-drag timing and sheet protection are unvalidated.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -69,7 +73,8 @@ private struct DiagnosticView: View {
             Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
     }
 
     private func permissionRow(_ title: String, state: PermissionState, request: @escaping () -> Void) -> some View {

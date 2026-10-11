@@ -6,13 +6,16 @@ struct MeasurementEvent {
     let receivedAt: ContinuousClock.Instant
     let windowCount: Int
     let failures: [WindowIssue.Kind]
+    /// Synchronous AppKit request cost, never WindowServer presentation latency.
+    let apiCallDuration: Duration?
 
     init(phase: Phase, receivedAt: ContinuousClock.Instant = .now, windowCount: Int = 0,
-         failures: [WindowIssue.Kind] = []) {
+         failures: [WindowIssue.Kind] = [], apiCallDuration: Duration? = nil) {
         self.phase = phase
         self.receivedAt = receivedAt
         self.windowCount = windowCount
         self.failures = failures
+        self.apiCallDuration = apiCallDuration
     }
 }
 
