@@ -8,56 +8,117 @@ enum OverlayObservation: Equatable {
 }
 
 @MainActor
-private final class MaterialPanel: NSPanel {
+protocol MaterialPanelPresenting: AnyObject {
+    var windowID: UInt32 { get }
+    func submit(frame: CGRect, above targetID: UInt32)
+    func remove()
+}
+
+@MainActor
+private final class MaterialPanel: NSPanel, MaterialPanelPresenting {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+    var windowID: UInt32 { UInt32(windowNumber) }
+
+    init(frame: CGRect) {
+        super.init(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isReleasedWhenClosed = false
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        hidesOnDeactivate = false
+        isFloatingPanel = false
+        level = .normal
+        animationBehavior = .none
+        // Candidate behaviors, not proof of full-screen / Stage Manager support.
+        collectionBehavior = [.canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]
+        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
+        effect.autoresizingMask = [.width, .height]
+        effect.material = .hudWindow
+        effect.state = .active
+        effect.blendingMode = .behindWindow
+        effect.isEmphasized = false
+        contentView = effect
+    }
+
+    func submit(frame: CGRect, above targetID: UInt32) {
+        setFrame(frame, display: false)
+        order(.above, relativeTo: Int(targetID))
+    }
+
+    func remove() {
+        orderOut(nil)
+        close()
+    }
 }
 
 @MainActor
 final class MaterialOverlayCoordinator {
     private struct Overlay {
-        let panel: MaterialPanel
+        let panel: any MaterialPanelPresenting
         let targetBounds: CGRect
     }
 
     private var overlays: [WindowKey: Overlay] = [:]
-    private var orderingFailure: String?
+    private var orderingFailures: [WindowKey: String] = [:]
+    private let makePanel: (CGRect) -> any MaterialPanelPresenting
+    private let orderedWindowIDs: () -> [UInt32]?
+    private let reduceTransparency: () -> Bool
 
     var overlayKeys: Set<WindowKey> { Set(overlays.keys) }
 
-    init() {}
+    init(makePanel: @escaping (CGRect) -> any MaterialPanelPresenting = { MaterialPanel(frame: $0) },
+         orderedWindowIDs: @escaping () -> [UInt32]? = {
+             guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+             return list.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
+         }, reduceTransparency: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency }) {
+        self.makePanel = makePanel
+        self.orderedWindowIDs = orderedWindowIDs
+        self.reduceTransparency = reduceTransparency
+    }
 
     func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate],
                    screenLayout: ScreenLayout) -> [WindowKey: OverlayObservation] {
         var observations: [WindowKey: OverlayObservation] = [:]
         let attempts = Set(intents.compactMap { key, intent in intent == .attemptBlur ? key : nil })
         for key in Set(overlays.keys).subtracting(attempts) { remove(key) }
+        // A rejected placement remains rejected while that same target stays selected.
+        // Removal/disappearance expires it, so a later window can be rebuilt safely.
+        orderingFailures = orderingFailures.filter { attempts.contains($0.key) }
         for (key, intent) in intents {
             if case .cannotProtect(let reason) = intent { observations[key] = .failed(reason: reason) }
         }
         guard !attempts.isEmpty else { return observations }
 
-        // A system setting asking for opaque backgrounds cannot meet the blur contract.
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+        if reduceTransparency() {
             removePanels()
-            for key in attempts {
-                observations[key] = .failed(reason: "Reduce Transparency is enabled; material blur is unavailable")
-            }
+            for key in attempts { observations[key] = .failed(reason: "Reduce Transparency is enabled; material blur is unavailable") }
             return observations
         }
 
-        // Check the previous requests before any re-ordering can conceal a failure.
-        // CG metadata can reject an ordering candidate, but cannot approve visual protection.
-        if orderingFailure == nil, !overlays.isEmpty {
-            orderingFailure = relativeOrderingFailure()
-        }
-        if let orderingFailure {
-            removePanels()
-            for key in attempts { observations[key] = .failed(reason: orderingFailure) }
-            return observations
+        // Check all previous placements from one immutable metadata sample before
+        // re-ordering or removing panels can conceal an individual failure.
+        if !overlays.isEmpty {
+            guard let orderedIDs = orderedWindowIDs() else {
+                removePanels()
+                for key in attempts { observations[key] = .failed(reason: "Public window order metadata is unavailable; relative layering is unverified") }
+                return observations
+            }
+            let ownIDs = Set(overlays.values.map { $0.panel.windowID })
+            for (key, overlay) in overlays {
+                if let failure = relativeOrderingFailure(for: key, panelID: overlay.panel.windowID, orderedIDs: orderedIDs, ownIDs: ownIDs) {
+                    orderingFailures[key] = failure
+                }
+            }
         }
 
         for key in attempts {
+            if let failure = orderingFailures[key] {
+                remove(key)
+                observations[key] = .failed(reason: failure)
+                continue
+            }
             guard let window = windows.first(where: { $0.key == key }), window.isOnScreen,
                   window.layer == 0, valid(window.bounds), key.cgWindowID > 0,
                   valid(screenLayout.primaryScreenFrame) else {
@@ -65,8 +126,7 @@ final class MaterialOverlayCoordinator {
                 observations[key] = .failed(reason: "Validated window geometry or public identity is unavailable")
                 continue
             }
-            let rect = CoordinateTransform.appKitRect(from: window.bounds,
-                                                       primaryScreenFrame: screenLayout.primaryScreenFrame)
+            let rect = CoordinateTransform.appKitRect(from: window.bounds, primaryScreenFrame: screenLayout.primaryScreenFrame)
             guard screenLayout.screenFrames.contains(where: { valid($0) && $0.intersects(rect) }) else {
                 remove(key)
                 observations[key] = .failed(reason: "Target does not intersect a validated display")
@@ -74,40 +134,16 @@ final class MaterialOverlayCoordinator {
             }
             // Moving/resizing expires the prior placement; never animate across exposed content.
             if overlays[key]?.targetBounds != window.bounds { remove(key) }
-            if overlays[key] == nil {
-                let panel = MaterialPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
-                                          backing: .buffered, defer: false)
-                panel.isReleasedWhenClosed = false
-                panel.isOpaque = false
-                panel.backgroundColor = .clear
-                panel.hasShadow = false
-                panel.ignoresMouseEvents = true
-                panel.hidesOnDeactivate = false
-                panel.isFloatingPanel = false
-                panel.level = .normal
-                panel.animationBehavior = .none
-                // Candidate behaviors, not proof of full-screen / Stage Manager support.
-                panel.collectionBehavior = [.canJoinAllApplications, .fullScreenAuxiliary, .ignoresCycle]
-                let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: rect.size))
-                effect.autoresizingMask = [.width, .height]
-                effect.material = .hudWindow
-                effect.state = .active
-                effect.blendingMode = .behindWindow
-                effect.isEmphasized = false
-                panel.contentView = effect
-                overlays[key] = Overlay(panel: panel, targetBounds: window.bounds)
-            }
-            guard let panel = overlays[key]?.panel else { continue }
-            panel.setFrame(rect, display: false)
-            panel.order(.above, relativeTo: Int(key.cgWindowID))
-                observations[key] = .requestSubmitted
+            if overlays[key] == nil { overlays[key] = Overlay(panel: makePanel(rect), targetBounds: window.bounds) }
+            overlays[key]?.panel.submit(frame: rect, above: key.cgWindowID)
+            observations[key] = .requestSubmitted
         }
         return observations
     }
 
     func removeAll() {
         removePanels()
-        orderingFailure = nil
+        orderingFailures.removeAll()
     }
 
     private func removePanels() {
@@ -115,29 +151,17 @@ final class MaterialOverlayCoordinator {
     }
 
     private func remove(_ key: WindowKey) {
-        guard let overlay = overlays.removeValue(forKey: key) else { return }
-        overlay.panel.orderOut(nil)
-        overlay.panel.close()
+        overlays.removeValue(forKey: key)?.panel.remove()
     }
 
-    private func relativeOrderingFailure() -> String? {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                  kCGNullWindowID) as? [[String: Any]] else {
-            return "Public window order metadata is unavailable; relative layering is unverified"
+    private func relativeOrderingFailure(for key: WindowKey, panelID: UInt32, orderedIDs: [UInt32], ownIDs: Set<UInt32>) -> String? {
+        guard let panelIndex = orderedIDs.firstIndex(of: panelID),
+              let targetIndex = orderedIDs.firstIndex(of: key.cgWindowID), panelIndex < targetIndex else {
+            return "Relative overlay order was lost; cannot protect with this material candidate"
         }
-        let orderedIDs = list.compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value }
-        let ownIDs = Set(overlays.values.map { UInt32($0.panel.windowNumber) })
-        for (key, overlay) in overlays {
-            guard let panelIndex = orderedIDs.firstIndex(of: UInt32(overlay.panel.windowNumber)),
-                  let targetIndex = orderedIDs.firstIndex(of: key.cgWindowID), panelIndex < targetIndex else {
-                return "Relative overlay order was lost; cannot protect with this material candidate"
-            }
-            // Own panels may be adjacent for overlapping target windows. An unrelated window
-            // between this panel and its target means this candidate could blur that window.
-            let between = orderedIDs[(panelIndex + 1)..<targetIndex]
-            guard between.allSatisfy({ ownIDs.contains($0) }) else {
-                return "An unrelated window is between overlay and target; relative layering failed"
-            }
+        let between = orderedIDs[(panelIndex + 1)..<targetIndex]
+        guard between.allSatisfy({ ownIDs.contains($0) }) else {
+            return "An unrelated window is between overlay and target; relative layering failed"
         }
         return nil
     }

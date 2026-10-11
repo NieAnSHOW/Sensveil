@@ -2,7 +2,7 @@ import AppKit
 import PoCCore
 
 struct FocusEvent {
-    enum Kind { case startup, activation, launch, termination, screens, space, sleep, wake }
+    enum Kind { case startup, activation, launch, termination, screens, space, sleep, wake, windows, permissions }
     let receivedAt: ContinuousClock.Instant
     let frontmost: ProcessInstance?
     let kind: Kind

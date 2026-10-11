@@ -11,10 +11,12 @@ public final class SensveilController: ObservableObject {
 
     public let catalog: ApplicationCatalog
     public let configurationStore: ConfigurationStore
+    public let protectionCoordinator: WindowProtectionCoordinator
 
-    public init(configurationStore: ConfigurationStore = ConfigurationStore(), catalog: ApplicationCatalog = ApplicationCatalog()) {
+    public init(configurationStore: ConfigurationStore = ConfigurationStore(), catalog: ApplicationCatalog = ApplicationCatalog(), protectionCoordinator: WindowProtectionCoordinator = WindowProtectionCoordinator()) {
         self.configurationStore = configurationStore
         self.catalog = catalog
+        self.protectionCoordinator = protectionCoordinator
         do {
             self.configuration = try configurationStore.load()
         } catch {
@@ -22,7 +24,32 @@ public final class SensveilController: ObservableObject {
             self.configurationLoadFailed = true
             self.errorMessage = "Cannot load saved configuration: \(error)"
         }
+        protectionCoordinator.onStatusChange = { [weak self] in self?.objectWillChange.send() }
+        protectionCoordinator.start(configuration: configuration)
     }
+
+    deinit {
+        let coordinator = protectionCoordinator
+        Task { @MainActor in coordinator.stop() }
+    }
+
+    public func status(for application: ProtectedApplication) -> ProtectionStatus {
+        protectionCoordinator.status(for: application)
+    }
+
+    public func setGlobalPause(_ paused: Bool) {
+        guard !configurationLoadFailed else { return }
+        var updated = configuration
+        updated.isGloballyPaused = paused
+        do {
+            try configurationStore.save(updated)
+            configuration = updated
+            protectionCoordinator.setGlobalPause(paused)
+            errorMessage = nil
+        } catch { errorMessage = "Cannot save configuration: \(error)" }
+    }
+
+    public func stopProtection() { protectionCoordinator.stop() }
 
     public var applications: [ApplicationDescriptor] { catalog.list(search: searchText) }
     public var canAddApplication: Bool { !configurationLoadFailed && configuration.applications.count < ConfigurationStore.freeApplicationLimit }
@@ -46,6 +73,7 @@ public final class SensveilController: ObservableObject {
             let updated = try configurationStore.add(protected, to: configuration)
             try configurationStore.save(updated)
             configuration = updated
+            protectionCoordinator.setConfiguration(updated)
             errorMessage = nil
         } catch {
             errorMessage = error as? ConfigurationError == .freeLimitReached ? freeLimitMessage : "Cannot save configuration: \(error)"
@@ -58,6 +86,7 @@ public final class SensveilController: ObservableObject {
         do {
             try configurationStore.save(updated)
             configuration = updated
+            protectionCoordinator.setConfiguration(updated)
             errorMessage = nil
         } catch { errorMessage = "Cannot save configuration: \(error)" }
     }

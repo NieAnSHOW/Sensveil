@@ -7,6 +7,7 @@ import PoCCore
 /// kept unverified; no public AppKit API proves composited pixels are private.
 @MainActor
 public final class WindowProtectionCoordinator {
+    public var onStatusChange: (() -> Void)?
     struct RunningTarget: Equatable {
         let bundleIdentifier: String
         let instance: ProcessInstance
@@ -18,6 +19,8 @@ public final class WindowProtectionCoordinator {
         func stop()
         func currentFrontmost() -> ProcessInstance?
         func runningInstances(for bundleIdentifier: String) -> [ProcessInstance]
+        func eligibilityFailure(for bundleIdentifier: String) -> String?
+        func retainTrackers(for instances: Set<ProcessInstance>)
         func snapshot(for instance: ProcessInstance) -> WindowSnapshot?
         func permissionStates() -> [PermissionState]
         var overlayKeys: Set<WindowKey> { get }
@@ -45,9 +48,8 @@ public final class WindowProtectionCoordinator {
     public convenience init() {
         let registry = ProcessRegistry()
         let focus = FocusMonitor(registry: registry)
-        let tracker = WindowTracker(registry: registry)
         let overlays = MaterialOverlayCoordinator()
-        self.init(runtime: AdapterRuntime(focus: focus, tracker: tracker, overlays: overlays, registry: registry))
+        self.init(runtime: AdapterRuntime(focus: focus, overlays: overlays, registry: registry))
     }
 
     public func start(configuration: ProtectionConfiguration) {
@@ -72,6 +74,7 @@ public final class WindowProtectionCoordinator {
         statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .notRunning) })
         frontmost = nil
         isStarted = false
+        onStatusChange?()
     }
 
     public func setConfiguration(_ configuration: ProtectionConfiguration) {
@@ -128,7 +131,7 @@ public final class WindowProtectionCoordinator {
                 selectedInstances = selectedInstances.mapValues { $0.filter { $0.pid != pid } }
                 runtime.removeAllOverlays()
             }
-        case .launch, .activation, .startup:
+        case .launch, .activation, .startup, .windows, .permissions:
             break
         }
         reconcile()
@@ -136,20 +139,38 @@ public final class WindowProtectionCoordinator {
 
     private func reconcile() {
         guard isStarted else { return }
+        defer { onStatusChange?() }
+        statuses.removeAll()
         let apps = configuration.applications.filter(\.isEnabled)
         if configuration.applications.count > ConfigurationStore.freeApplicationLimit {
             statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .overFreeLimit) })
+            runtime.removeAllOverlays()
+            runtime.retainTrackers(for: [])
+            overlayKeys.removeAll()
+            snapshots.removeAll()
+            selectedInstances.removeAll()
+            return
         }
         var targets: [(bundle: String, instance: ProcessInstance)] = []
+        selectedInstances.removeAll()
         for application in apps {
+            guard isEligible(bundleIdentifier: application.bundleIdentifier) else {
+                statuses[application.bundleIdentifier] = .cannotProtect("Configured application identity is not eligible.")
+                continue
+            }
             let instances = runtime.runningInstances(for: application.bundleIdentifier)
+            if let failure = runtime.eligibilityFailure(for: application.bundleIdentifier) {
+                statuses[application.bundleIdentifier] = .cannotProtect(failure)
+                continue
+            }
             selectedInstances[application.bundleIdentifier] = Set(instances)
             targets.append(contentsOf: instances.map { (application.bundleIdentifier, $0) })
             for instance in instances {
-                if let snapshot = runtime.snapshot(for: instance) { snapshots[instance] = snapshot }
+                snapshots[instance] = runtime.snapshot(for: instance)
             }
         }
         let live = Set(targets.map(\.instance))
+        runtime.retainTrackers(for: live)
         snapshots = snapshots.filter { live.contains($0.key) }
 
         var allWindows: [WindowCandidate] = []
@@ -179,7 +200,7 @@ public final class WindowProtectionCoordinator {
 
     private func updateStatuses(apps: [ProtectedApplication], targets: [(bundle: String, instance: ProcessInstance)], snapshots: [ProcessInstance: WindowSnapshot], intents: [WindowKey: OverlayIntent], observations: [WindowKey: OverlayObservation]) {
         for app in apps {
-            if !isEligible(bundleIdentifier: app.bundleIdentifier) { statuses[app.bundleIdentifier] = .cannotProtect("Configured application identity is not eligible."); continue }
+            if statuses[app.bundleIdentifier] != nil { continue }
             let appTargets = targets.filter { $0.bundle == app.bundleIdentifier }
             if isPaused || lifecycleSuspended { statuses[app.bundleIdentifier] = .paused; continue }
             guard !appTargets.isEmpty else { statuses[app.bundleIdentifier] = .notRunning; continue }
@@ -209,7 +230,7 @@ public final class WindowProtectionCoordinator {
 
     private func isEligible(bundleIdentifier: String) -> Bool {
         let own = Bundle.main.bundleIdentifier
-        return bundleIdentifier != own && bundleIdentifier != "com.nieanshow.sensveil.fixture" && !bundleIdentifier.lowercased().contains("sensveilfixture")
+        return BundleIdentifierValidator.isValid(bundleIdentifier) && bundleIdentifier != own && bundleIdentifier != "com.nieanshow.sensveil" && bundleIdentifier != "com.nieanshow.sensveil.fixture" && !bundleIdentifier.lowercased().contains("sensveilfixture")
     }
 
     private func issueSummary(_ issue: WindowIssue) -> String {
@@ -238,34 +259,125 @@ public final class WindowProtectionCoordinator {
 }
 
 @MainActor
-private final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
-    let focus: FocusMonitor
-    var trackers: [ProcessInstance: WindowTracker] = [:]
-    let overlays: MaterialOverlayCoordinator
+final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
+    struct RunningApplication {
+        let bundleIdentifier: String?
+        let bundleURL: URL?
+        let activationPolicy: NSApplication.ActivationPolicy
+        let pid: Int32
+        let launchDate: Date?
+        let isTerminated: Bool
+    }
+
+    let focus: any FocusMonitoring
+    private var trackers: [ProcessInstance: any WindowTracking] = [:]
+    let overlays: any OverlayCoordinating
     var overlayKeys: Set<WindowKey> { overlays.overlayKeys }
     let registry: ProcessRegistry
-    init(focus: FocusMonitor, tracker: WindowTracker, overlays: MaterialOverlayCoordinator, registry: ProcessRegistry) { self.focus = focus; self.trackers = [:]; self.overlays = overlays; self.registry = registry }
-    func start(onEvent: @escaping (FocusEvent) -> Void) { focus.start(onEvent: onEvent) }
-    public func stop() { focus.stop(); trackers.values.forEach { $0.stop() }; trackers.removeAll() }
-    func currentFrontmost() -> ProcessInstance? { focus.currentInstance() }
-    func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] {
-        NSWorkspace.shared.runningApplications.compactMap { app in
-            guard app.bundleIdentifier == bundleIdentifier, !app.isTerminated, let launchDate = app.launchDate else { return nil }
-            return registry.observe(pid: app.processIdentifier, launchDate: launchDate)
+    private let applications: () -> [RunningApplication]
+    private let makeTracker: () -> any WindowTracking
+    private let permissions: () -> [PermissionState]
+    private let pollInterval: Duration
+    private var onEvent: ((FocusEvent) -> Void)?
+    private var permissionPoll: Task<Void, Never>?
+    private var pendingWindowEvent: Task<Void, Never>?
+    private var session = UUID()
+    private var eligibilityFailures: [String: String] = [:]
+
+    init(focus: any FocusMonitoring, overlays: any OverlayCoordinating, registry: ProcessRegistry,
+         applications: @escaping () -> [RunningApplication] = {
+             NSWorkspace.shared.runningApplications.map { RunningApplication(bundleIdentifier: $0.bundleIdentifier, bundleURL: $0.bundleURL, activationPolicy: $0.activationPolicy, pid: $0.processIdentifier, launchDate: $0.launchDate, isTerminated: $0.isTerminated) }
+         }, makeTracker: (() -> any WindowTracking)? = nil,
+         permissions: @escaping () -> [PermissionState] = { [AXIsProcessTrusted() ? .granted : .notGranted] },
+         pollInterval: Duration = .seconds(1)) {
+        self.focus = focus; self.overlays = overlays; self.registry = registry
+        self.applications = applications
+        self.makeTracker = makeTracker ?? { WindowTracker(registry: registry) }
+        self.permissions = permissions; self.pollInterval = pollInterval
+    }
+    func start(onEvent: @escaping (FocusEvent) -> Void) {
+        stop()
+        self.onEvent = onEvent
+        focus.start { [weak self] event in
+            guard let self else { return }
+            if let pid = event.terminatedPID {
+                self.retainTrackers(for: Set(self.trackers.keys.filter { $0.pid != pid }))
+            }
+            self.onEvent?(event)
+        }
+        let activeSession = session
+        var previous = permissionStates()
+        permissionPoll = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.pollInterval else { return }
+                do { try await Task.sleep(for: interval) } catch { return }
+                guard let self, self.session == activeSession else { return }
+                let current = self.permissionStates()
+                if previous != current {
+                    previous = current
+                    self.publish(.permissions)
+                }
+            }
         }
     }
+    public func stop() {
+        session = UUID()
+        permissionPoll?.cancel(); permissionPoll = nil
+        pendingWindowEvent?.cancel(); pendingWindowEvent = nil
+        onEvent = nil
+        focus.stop(); trackers.values.forEach { $0.stop() }; trackers.removeAll()
+    }
+    func currentFrontmost() -> ProcessInstance? { focus.currentInstance() }
+    func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] {
+        eligibilityFailures[bundleIdentifier] = nil
+        return applications().compactMap { app in
+            guard app.bundleIdentifier == bundleIdentifier, !app.isTerminated else { return nil }
+            guard let url = app.bundleURL,
+                  ApplicationCatalog.descriptor(at: url, activationPolicy: app.activationPolicy, ownBundleIdentifier: Bundle.main.bundleIdentifier)?.bundleIdentifier == bundleIdentifier else {
+                eligibilityFailures[bundleIdentifier] = "Running application is not an eligible regular application."
+                return nil
+            }
+            guard let launchDate = app.launchDate else { return nil }
+            return registry.observe(pid: app.pid, launchDate: launchDate)
+        }
+    }
+    func eligibilityFailure(for bundleIdentifier: String) -> String? { eligibilityFailures[bundleIdentifier] }
+    func retainTrackers(for instances: Set<ProcessInstance>) {
+        for key in Set(trackers.keys).subtracting(instances) { trackers.removeValue(forKey: key)?.stop() }
+    }
     func snapshot(for instance: ProcessInstance) -> WindowSnapshot? {
-        let tracker: WindowTracker
+        let tracker: any WindowTracking
         if let existing = trackers[instance] {
             tracker = existing
         } else {
-            tracker = WindowTracker(registry: registry)
+            tracker = makeTracker()
             trackers[instance] = tracker
-            tracker.start(for: instance) { _ in }
+            // start emits its first snapshot synchronously. The caller is already
+            // reconciling it; only later AX/calibration callbacks schedule rebuilds.
+            var starting = true
+            let activeSession = session
+            tracker.start(for: instance) { [weak self] _ in
+                guard !starting, let self, self.session == activeSession,
+                      self.trackers[instance] != nil else { return }
+                self.scheduleWindowEvent()
+            }
+            starting = false
         }
         return tracker.snapshot(for: instance)
     }
-    func permissionStates() -> [PermissionState] { [AXIsProcessTrusted() ? .granted : .notGranted] }
+    func permissionStates() -> [PermissionState] { permissions() }
+    private func scheduleWindowEvent() {
+        guard onEvent != nil, pendingWindowEvent == nil else { return }
+        let activeSession = session
+        pendingWindowEvent = Task { @MainActor [weak self] in
+            guard let self, self.session == activeSession, !Task.isCancelled else { return }
+            self.pendingWindowEvent = nil
+            self.publish(.windows)
+        }
+    }
+    private func publish(_ kind: FocusEvent.Kind) {
+        onEvent?(FocusEvent(receivedAt: .now, frontmost: currentFrontmost(), kind: kind, terminatedPID: nil))
+    }
     func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate]) -> [WindowKey: OverlayObservation] {
         let screens = NSScreen.screens
         guard let primary = screens.first else { return intents.reduce(into: [:]) { result, entry in if case .cannotProtect(let reason) = entry.value { result[entry.key] = .failed(reason: reason) } } }
@@ -273,4 +385,9 @@ private final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         return overlays.reconcile(intents, windows: windows, screenLayout: layout)
     }
     public func removeAllOverlays() { overlays.removeAll() }
+}
+
+extension WindowProtectionCoordinator.Runtime {
+    func eligibilityFailure(for bundleIdentifier: String) -> String? { nil }
+    func retainTrackers(for instances: Set<ProcessInstance>) {}
 }
