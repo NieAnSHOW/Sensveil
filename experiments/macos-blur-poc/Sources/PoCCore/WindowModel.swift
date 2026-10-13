@@ -87,6 +87,8 @@ public enum OverlayIntent: Equatable, Sendable {
 
 public struct ProtectionInput: Sendable {
     public var frontmost: ProcessInstance?
+    /// Current frontmost PID from NSWorkspace, even when launchDate is unavailable.
+    public var frontmostPID: Int32?
     public var selected: Set<ProcessInstance>
     /// Only uniquely matched candidates should be supplied by the tracker.
     public var windows: [WindowCandidate]
@@ -96,8 +98,9 @@ public struct ProtectionInput: Sendable {
     public var isSuspended: Bool
     public var requiresRevalidation: Bool
 
-    public init(frontmost: ProcessInstance?, selected: Set<ProcessInstance>, windows: [WindowCandidate], previousOverlayKeys: Set<WindowKey>, permissions: [PermissionState], isSuspended: Bool, requiresRevalidation: Bool) {
+    public init(frontmost: ProcessInstance?, frontmostPID: Int32? = nil, selected: Set<ProcessInstance>, windows: [WindowCandidate], previousOverlayKeys: Set<WindowKey>, permissions: [PermissionState], isSuspended: Bool, requiresRevalidation: Bool) {
         self.frontmost = frontmost
+        self.frontmostPID = frontmostPID
         self.selected = selected
         self.windows = windows
         self.previousOverlayKeys = previousOverlayKeys

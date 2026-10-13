@@ -17,7 +17,7 @@ public final class WindowProtectionCoordinator {
     protocol Runtime: AnyObject {
         func start(onEvent: @escaping (FocusEvent) -> Void)
         func stop()
-        func currentFrontmost() -> ProcessInstance?
+        func currentFrontmostPID() -> Int32?
         func runningInstances(for bundleIdentifier: String) -> [ProcessInstance]
         func eligibilityFailure(for bundleIdentifier: String) -> String?
         func retainTrackers(for instances: Set<ProcessInstance>)
@@ -33,7 +33,7 @@ public final class WindowProtectionCoordinator {
     private var statuses: [String: ProtectionStatus] = [:]
     private var snapshots: [ProcessInstance: WindowSnapshot] = [:]
     private var selectedInstances: [String: Set<ProcessInstance>] = [:]
-    private var frontmost: ProcessInstance?
+    private var frontmostPID: Int32?
     private var isStarted = false
     private var isPaused = false
     private var lifecycleSuspended = false
@@ -47,7 +47,7 @@ public final class WindowProtectionCoordinator {
     /// actor and share one ProcessRegistry to prevent PID reuse confusion.
     public convenience init() {
         let registry = ProcessRegistry()
-        let focus = FocusMonitor(registry: registry)
+        let focus = FocusMonitor()
         let overlays = MaterialOverlayCoordinator()
         self.init(runtime: AdapterRuntime(focus: focus, overlays: overlays, registry: registry))
     }
@@ -72,7 +72,7 @@ public final class WindowProtectionCoordinator {
         overlayKeys.removeAll()
         selectedInstances.removeAll()
         statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .notRunning) })
-        frontmost = nil
+        frontmostPID = nil
         isStarted = false
         onStatusChange?()
     }
@@ -109,7 +109,6 @@ public final class WindowProtectionCoordinator {
 
     private func handle(_ event: FocusEvent) {
         guard isStarted else { return }
-        frontmost = event.frontmost
         switch event.kind {
         case .sleep:
             lifecycleSuspended = true
@@ -176,8 +175,12 @@ public final class WindowProtectionCoordinator {
         var allWindows: [WindowCandidate] = []
         for snapshot in snapshots.values { allWindows.append(contentsOf: snapshot.windows) }
         let selected = Set(targets.map(\.instance))
+        // Read current focus for every reconciliation, including AX callbacks.
+        // Unknown focus must never fall back to a previously focused app.
+        frontmostPID = runtime.currentFrontmostPID()
         let input = ProtectionInput(
-            frontmost: frontmost ?? runtime.currentFrontmost(),
+            frontmost: nil,
+            frontmostPID: frontmostPID,
             selected: selected,
             windows: allWindows,
             previousOverlayKeys: overlayKeys,
@@ -188,7 +191,8 @@ public final class WindowProtectionCoordinator {
         var intents = ProtectionReducer.reduce(input)
         // Focus is application-level: every process instance for a configured
         // bundle is foreground while any one of its instances is frontmost.
-        if let focused = input.frontmost, let focusedBundle = targets.first(where: { $0.instance == focused })?.bundle {
+        if let focusedPID = input.frontmostPID,
+           let focusedBundle = targets.first(where: { $0.instance.pid == focusedPID })?.bundle {
             for target in targets where target.bundle == focusedBundle {
                 for key in snapshots[target.instance]?.windows.map(\.key) ?? [] { intents[key] = .remove }
             }
@@ -204,7 +208,7 @@ public final class WindowProtectionCoordinator {
             let appTargets = targets.filter { $0.bundle == app.bundleIdentifier }
             if isPaused || lifecycleSuspended { statuses[app.bundleIdentifier] = .paused; continue }
             guard !appTargets.isEmpty else { statuses[app.bundleIdentifier] = .notRunning; continue }
-            if appTargets.contains(where: { $0.instance == frontmost }) { statuses[app.bundleIdentifier] = .foreground; continue }
+            if appTargets.contains(where: { $0.instance.pid == frontmostPID }) { statuses[app.bundleIdentifier] = .foreground; continue }
             let appKeys = Set(appTargets.flatMap { instance in snapshots[instance.instance]?.windows.map(\.key) ?? [] })
             let appIntents = intents.filter { appKeys.contains($0.key) }
             let appObservations = observations.filter { appKeys.contains($0.key) }
@@ -301,6 +305,7 @@ final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         focus.start { [weak self] event in
             guard let self else { return }
             if let pid = event.terminatedPID {
+                self.registry.remove(pid: pid)
                 self.retainTrackers(for: Set(self.trackers.keys.filter { $0.pid != pid }))
             }
             self.onEvent?(event)
@@ -327,7 +332,7 @@ final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         onEvent = nil
         focus.stop(); trackers.values.forEach { $0.stop() }; trackers.removeAll()
     }
-    func currentFrontmost() -> ProcessInstance? { focus.currentInstance() }
+    func currentFrontmostPID() -> Int32? { focus.currentFrontmostPID() }
     func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] {
         eligibilityFailures[bundleIdentifier] = nil
         return applications().compactMap { app in
@@ -376,7 +381,7 @@ final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         }
     }
     private func publish(_ kind: FocusEvent.Kind) {
-        onEvent?(FocusEvent(receivedAt: .now, frontmost: currentFrontmost(), kind: kind, terminatedPID: nil))
+        onEvent?(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: kind, terminatedPID: nil))
     }
     func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate]) -> [WindowKey: OverlayObservation] {
         let screens = NSScreen.screens

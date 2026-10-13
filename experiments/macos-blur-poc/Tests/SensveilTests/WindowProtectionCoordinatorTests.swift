@@ -46,6 +46,53 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("unverified"))
     }
 
+    func testStartupWithKnownForegroundPIDWithoutProcessInstanceRequestsBlur() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.frontmost = nil
+        runtime.rawFrontmostPID = 200
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(runtime.reconciles.last?.0[candidate(instance, id: 1).key], .attemptBlur)
+    }
+
+    func testTargetToKnownDesktopPIDAndBackClearsOnlyWhenTargetIsFocused() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.frontmost = instance
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        let key = candidate(instance, id: 1).key
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        XCTAssertEqual(runtime.reconciles.last?.0[key], .remove)
+
+        runtime.frontmost = nil
+        runtime.rawFrontmostPID = 200
+        runtime.emit(.activation)
+
+        XCTAssertEqual(runtime.reconciles.last?.0[key], .attemptBlur)
+        runtime.frontmost = instance
+        runtime.rawFrontmostPID = nil
+        runtime.emit(.activation)
+        XCTAssertEqual(runtime.reconciles.last?.0[key], .remove)
+        XCTAssertEqual(coordinator.status(for: bundleID), .foreground)
+    }
+
+    func testUnknownForegroundAfterKnownForegroundDoesNotReuseStaleFocus() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        runtime.frontmost = nil
+        runtime.emit(.activation)
+
+        guard case .cannotProtect = runtime.reconciles.last?.0[candidate(instance, id: 1).key] else {
+            return XCTFail("unknown foreground must not be treated as a known background application")
+        }
+    }
+
     func testPauseRemovesOverlaysAndReportsPaused() {
         let instance = ProcessInstance(pid: 100, generation: 1)
         let runtime = configuredRuntime(instance: instance)
@@ -238,7 +285,7 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         defer { fixture.remove() }
         let coordinator = WindowProtectionCoordinator(runtime: fixture.runtime)
         coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
-        fixture.launchDate = fixture.launchDate.addingTimeInterval(10)
+        fixture.launchDate = fixture.launchDate?.addingTimeInterval(10)
         fixture.focus.emit(.launch)
         XCTAssertEqual(fixture.tracker.stopCount, 1)
         coordinator.setConfiguration(ProtectionConfiguration())
@@ -284,6 +331,85 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         XCTAssertNil(runtime.callback)
     }
 
+    func testProductionFocusAdapterReconcilesDesktopActivationWithoutLaunchIdentity() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let fixture = try RuntimeFixture(bundleID: bundleID, instance: instance, snapshot: snapshot(instance, windows: [candidate(instance, id: 1)]))
+        defer { fixture.remove() }
+        // The focus provider represents NSWorkspace's current PID; it has no
+        // launchDate requirement. Target tracking still uses the dated instance.
+        var foregroundPID: Int32? = 200
+        let focus = FocusMonitor(foregroundPID: { foregroundPID })
+        let runtime = AdapterRuntime(focus: focus, overlays: fixture.overlays, registry: ProcessRegistry(), applications: {
+            [AdapterRuntime.RunningApplication(bundleIdentifier: self.bundleID, bundleURL: fixture.directory.appendingPathComponent("Editor.app"), activationPolicy: .regular, pid: 100, launchDate: Date(timeIntervalSince1970: 1), isTerminated: false)]
+        }, makeTracker: { fixture.tracker }, permissions: { [.granted] })
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        let key = candidate(instance, id: 1).key
+        XCTAssertEqual(fixture.overlays.calls.last?.0[key], .attemptBlur)
+
+        foregroundPID = 100
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        XCTAssertEqual(fixture.overlays.calls.last?.0[key], .remove)
+        XCTAssertEqual(coordinator.status(for: bundleID), .foreground)
+
+        foregroundPID = 200
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        XCTAssertEqual(fixture.overlays.calls.last?.0[key], .attemptBlur)
+        XCTAssertTrue(fixture.overlays.overlayKeys.contains(key))
+
+        // Calibration/AX reconciliation must read current focus, not keep the
+        // last activation's PID when the system can no longer supply focus.
+        foregroundPID = nil
+        coordinator.setConfiguration(ProtectionConfiguration(applications: [application()]))
+        guard case .cannotProtect = fixture.overlays.calls.last?.0[key] else {
+            return XCTFail("unknown current focus must clear the submitted overlay")
+        }
+        XCTAssertFalse(fixture.overlays.overlayKeys.contains(key))
+    }
+
+    func testProductionFocusAdapterRejectsUnknownAndInvalidPIDs() {
+        var foregroundPID: Int32?
+        let focus = FocusMonitor(foregroundPID: { foregroundPID })
+        var events: [FocusEvent] = []
+        for pid: Int32? in [nil, -1, 0, 200] {
+            foregroundPID = pid
+            focus.start { events.append($0) }
+        }
+        focus.stop()
+        XCTAssertEqual(events.map(\.frontmostPID), [nil, nil, nil, 200])
+    }
+
+    func testTerminationInvalidatesTargetGenerationEvenWhenLaunchDateIsUnchanged() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let fixture = try RuntimeFixture(bundleID: bundleID, instance: instance, snapshot: snapshot(instance, windows: [candidate(instance, id: 1)]))
+        defer { fixture.remove() }
+        let runtime = fixture.runtime
+        runtime.start { _ in }
+        defer { runtime.stop() }
+        let before = try XCTUnwrap(runtime.runningInstances(for: bundleID).first)
+
+        fixture.focus.emit(.termination, terminatedPID: 100)
+        let after = try XCTUnwrap(runtime.runningInstances(for: bundleID).first)
+
+        XCTAssertNotEqual(before, after)
+    }
+
+    func testTargetWithoutLaunchDateStillNeverStartsTracker() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let fixture = try RuntimeFixture(bundleID: bundleID, instance: instance, snapshot: snapshot(instance, windows: [candidate(instance, id: 1)]))
+        fixture.launchDate = nil
+        defer { fixture.remove() }
+        let coordinator = WindowProtectionCoordinator(runtime: fixture.runtime)
+        defer { coordinator.stop() }
+
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(coordinator.status(for: bundleID), .notRunning)
+        XCTAssertEqual(fixture.tracker.startCount, 0)
+        XCTAssertFalse(fixture.overlays.calls.contains { $0.0.values.contains(.attemptBlur) })
+    }
+
     private func configuredRuntime(instance: ProcessInstance) -> FakeProtectionRuntime {
         let runtime = FakeProtectionRuntime()
         runtime.instances[bundleID] = [instance]
@@ -311,7 +437,7 @@ private final class RuntimeFixture {
     let focus = FakeFocusMonitor()
     let overlays = FakeOverlayCoordinator()
     let directory: URL
-    var launchDate = Date(timeIntervalSince1970: 1)
+    var launchDate: Date? = Date(timeIntervalSince1970: 1)
     var isRunning = true
     var permission: PermissionState = .granted
     private let bundleID: String
@@ -353,8 +479,8 @@ private final class FakeFocusMonitor: FocusMonitoring {
     var callback: ((FocusEvent) -> Void)?
     func start(onEvent: @escaping (FocusEvent) -> Void) { callback = onEvent; emit(.startup) }
     func stop() { callback = nil }
-    func currentInstance() -> ProcessInstance? { ProcessInstance(pid: 200, generation: 2) }
-    func emit(_ kind: FocusEvent.Kind, terminatedPID: Int32? = nil) { callback?(FocusEvent(receivedAt: .now, frontmost: currentInstance(), kind: kind, terminatedPID: terminatedPID)) }
+    func currentFrontmostPID() -> Int32? { 200 }
+    func emit(_ kind: FocusEvent.Kind, terminatedPID: Int32? = nil) { callback?(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: kind, terminatedPID: terminatedPID)) }
 }
 
 @MainActor
@@ -375,6 +501,7 @@ private final class FakeOverlayCoordinator: OverlayCoordinating {
 private final class FakeProtectionRuntime: WindowProtectionCoordinator.Runtime {
     var callback: ((FocusEvent) -> Void)?
     var frontmost: ProcessInstance?
+    var rawFrontmostPID: Int32?
     var instances: [String: [ProcessInstance]] = [:]
     var snapshots: [ProcessInstance: WindowSnapshot] = [:]
     var permissions: [PermissionState] = [.granted]
@@ -383,9 +510,9 @@ private final class FakeProtectionRuntime: WindowProtectionCoordinator.Runtime {
     var removeAllCount = 0
     var overlayKeys = Set<WindowKey>()
 
-    func start(onEvent: @escaping (FocusEvent) -> Void) { callback = onEvent; onEvent(FocusEvent(receivedAt: .now, frontmost: frontmost, kind: .startup, terminatedPID: nil)) }
+    func start(onEvent: @escaping (FocusEvent) -> Void) { callback = onEvent; onEvent(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: .startup, terminatedPID: nil)) }
     func stop() { callback = nil }
-    func currentFrontmost() -> ProcessInstance? { frontmost }
+    func currentFrontmostPID() -> Int32? { rawFrontmostPID ?? frontmost?.pid }
     func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] { instances[bundleIdentifier] ?? [] }
     func snapshot(for instance: ProcessInstance) -> WindowSnapshot? { snapshots[instance] }
     func permissionStates() -> [PermissionState] { permissions }
@@ -399,5 +526,5 @@ private final class FakeProtectionRuntime: WindowProtectionCoordinator.Runtime {
         return result
     }
     func removeAllOverlays() { removeAllCount += 1; overlayKeys.removeAll() }
-    func emit(_ kind: FocusEvent.Kind, terminatedPID: Int32? = nil) { callback?(FocusEvent(receivedAt: .now, frontmost: frontmost, kind: kind, terminatedPID: terminatedPID)) }
+    func emit(_ kind: FocusEvent.Kind, terminatedPID: Int32? = nil) { callback?(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: kind, terminatedPID: terminatedPID)) }
 }

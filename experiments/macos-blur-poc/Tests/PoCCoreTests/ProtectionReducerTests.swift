@@ -92,6 +92,36 @@ final class ProtectionReducerTests: XCTestCase {
         WindowCandidate(key: WindowKey(process: process ?? self.process, cgWindowID: id), bounds: CGRect(x: 100, y: 200, width: 500, height: 300), isOnScreen: true, layer: 0)
     }
 
+    func testKnownForegroundPIDWithoutLaunchIdentitySupportsBlurAndUnblur() {
+        let window = window(id: 1)
+        var value = input(windows: [window])
+        value.frontmost = nil
+        value.frontmostPID = 200
+        XCTAssertEqual(ProtectionReducer.reduce(value)[window.key], .attemptBlur)
+        value.frontmostPID = process.pid
+        XCTAssertEqual(ProtectionReducer.reduce(value)[window.key], .remove)
+    }
+
+    func testInvalidForegroundPIDDoesNotBecomeBackgroundEvidence() {
+        let window = window(id: 1)
+        var value = input(windows: [window])
+        value.frontmost = nil
+        for pid: Int32? in [nil, 0, -1] {
+            value.frontmostPID = pid
+            guard case .cannotProtect = ProtectionReducer.reduce(value)[window.key] else {
+                return XCTFail("invalid PID must not supply focus evidence")
+            }
+        }
+    }
+
+    func testObservedProcessIdentityKeepsGenerationPrecedenceOverPIDFallback() {
+        let window = window(id: 1)
+        var value = input(windows: [window])
+        value.frontmost = ProcessInstance(pid: process.pid, generation: process.generation + 1)
+        value.frontmostPID = process.pid
+        XCTAssertEqual(ProtectionReducer.reduce(value)[window.key], .attemptBlur)
+    }
+
     private func input(windows: [WindowCandidate]) -> ProtectionInput {
         ProtectionInput(frontmost: ProcessInstance(pid: 43, generation: 1), selected: [process], windows: windows, previousOverlayKeys: [], permissions: [.granted], isSuspended: false, requiresRevalidation: false)
     }
