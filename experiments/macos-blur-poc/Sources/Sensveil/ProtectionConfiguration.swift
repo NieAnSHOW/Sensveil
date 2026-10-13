@@ -6,6 +6,7 @@ public enum ConfigurationError: Error, Equatable, Sendable {
     case unsupportedSchema
     case readFailed
     case writeFailed
+    case invalidSchedule
 }
 
 public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
@@ -56,37 +57,76 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct ProtectionConfiguration: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
+    /// Schema 1 files predate the global protection settings; they are decoded
+    /// with defaults for the new fields and stay untouched on disk until the
+    /// next user save writes them back as schema 2.
+    public static let minimumSchemaVersion = 1
 
     public var schemaVersion: Int
     public var applications: [ProtectedApplication]
     public var isGloballyPaused: Bool
+    public var blurLevel: BlurLevel
+    public var showsProtectionLabel: Bool
+    public var schedule: ProtectionSchedule
 
     public init(
         schemaVersion: Int = ProtectionConfiguration.currentSchemaVersion,
         applications: [ProtectedApplication] = [],
-        isGloballyPaused: Bool = false
+        isGloballyPaused: Bool = false,
+        blurLevel: BlurLevel = .standard,
+        showsProtectionLabel: Bool = true,
+        schedule: ProtectionSchedule = .defaultConfiguration
     ) {
         self.schemaVersion = schemaVersion
         self.applications = applications
         self.isGloballyPaused = isGloballyPaused
+        self.blurLevel = blurLevel
+        self.showsProtectionLabel = showsProtectionLabel
+        self.schedule = schedule
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
         case applications
         case isGloballyPaused
+        case blurLevel
+        case showsProtectionLabel
+        case schedule
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .schemaVersion)
-        guard version == Self.currentSchemaVersion else {
+        guard (Self.minimumSchemaVersion...Self.currentSchemaVersion).contains(version) else {
             throw ConfigurationError.unsupportedSchema
         }
         schemaVersion = version
         applications = try container.decode([ProtectedApplication].self, forKey: .applications)
         isGloballyPaused = try container.decode(Bool.self, forKey: .isGloballyPaused)
+        if version >= 2 {
+            // Schema 2 requires the global protection settings: a file that is
+            // missing them is corrupt, not a legacy file to default.
+            blurLevel = try container.decode(BlurLevel.self, forKey: .blurLevel)
+            showsProtectionLabel = try container.decode(Bool.self, forKey: .showsProtectionLabel)
+            schedule = try container.decode(ProtectionSchedule.self, forKey: .schedule)
+        } else {
+            blurLevel = .standard
+            showsProtectionLabel = true
+            schedule = .defaultConfiguration
+        }
+    }
+
+    /// Always encodes the current schema version so that a configuration
+    /// migrated in memory is written back as schema 2 on the next save.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(applications, forKey: .applications)
+        try container.encode(isGloballyPaused, forKey: .isGloballyPaused)
+        try container.encode(blurLevel, forKey: .blurLevel)
+        try container.encode(showsProtectionLabel, forKey: .showsProtectionLabel)
+        try container.encode(schedule, forKey: .schedule)
     }
 }
 
@@ -154,7 +194,8 @@ public final class ConfigurationStore {
     }
 
     public func save(_ configuration: ProtectionConfiguration) throws {
-        guard configuration.schemaVersion == ProtectionConfiguration.currentSchemaVersion else {
+        guard (ProtectionConfiguration.minimumSchemaVersion...ProtectionConfiguration.currentSchemaVersion)
+            .contains(configuration.schemaVersion) else {
             throw ConfigurationError.unsupportedSchema
         }
 
@@ -163,6 +204,10 @@ public final class ConfigurationStore {
             throw ConfigurationError.invalidBundleIdentifier
         }
         normalized.applications = deduplicated(normalized.applications)
+        // Encoding always writes currentSchemaVersion, so a configuration
+        // migrated from schema 1 is persisted as schema 2 here.
+        normalized.schemaVersion = ProtectionConfiguration.currentSchemaVersion
+        normalized.schedule = try normalized.schedule.normalized()
         let data: Data
         do {
             data = try encoder.encode(normalized)

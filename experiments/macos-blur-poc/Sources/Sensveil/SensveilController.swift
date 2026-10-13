@@ -70,6 +70,31 @@ public final class SensveilController: ObservableObject {
         }
     }
 
+    /// Persists the global protection settings and publishes them only after
+    /// the store accepted the write, so a failed save leaves the running
+    /// configuration untouched.
+    public func saveProtectionSettings(blurLevel: BlurLevel, showsProtectionLabel: Bool, schedule: ProtectionSchedule) throws {
+        guard !configurationLoadFailed else { throw ConfigurationError.readFailed }
+        var updated = configuration
+        do {
+            updated.schedule = try schedule.normalized()
+        } catch {
+            errorMessage = "保护时段无效，请检查开始和结束时间。"
+            throw error
+        }
+        updated.blurLevel = blurLevel
+        updated.showsProtectionLabel = showsProtectionLabel
+        do {
+            try configurationStore.save(updated)
+        } catch {
+            errorMessage = "无法保存配置，请检查本地文件的访问权限。"
+            throw error
+        }
+        configuration = updated
+        protectionCoordinator.setConfiguration(updated)
+        errorMessage = nil
+    }
+
     public func setApplicationEnabled(_ application: ProtectedApplication, enabled: Bool) {
         guard !configurationLoadFailed,
               let index = configuration.applications.firstIndex(where: { $0.id == application.id }) else { return }
