@@ -4,17 +4,20 @@ import PoCCore
 struct FocusEvent {
     enum Kind { case startup, activation, launch, termination, screens, space, sleep, wake, windows, permissions }
     let receivedAt: ContinuousClock.Instant
-    let frontmost: ProcessInstance?
+    let frontmostPID: Int32?
     let kind: Kind
     let terminatedPID: Int32?
 }
 
 @MainActor
 final class FocusMonitor: NSObject {
-    private let registry: ProcessRegistry
+    private let foregroundPID: () -> Int32?
     private var onEvent: ((FocusEvent) -> Void)?
 
-    init(registry: ProcessRegistry) { self.registry = registry }
+    init(foregroundPID: @escaping () -> Int32? = {
+        guard let app = NSWorkspace.shared.frontmostApplication, !app.isTerminated else { return nil }
+        return app.processIdentifier
+    }) { self.foregroundPID = foregroundPID }
 
     func start(onEvent: @escaping (FocusEvent) -> Void) {
         stop()
@@ -37,10 +40,11 @@ final class FocusMonitor: NSObject {
         onEvent = nil
     }
 
-    func currentInstance() -> ProcessInstance? {
-        guard let app = NSWorkspace.shared.frontmostApplication, !app.isTerminated,
-              let launchDate = app.launchDate else { return nil }
-        return registry.observe(pid: app.processIdentifier, launchDate: launchDate)
+    /// Focus only requires a live PID. launchDate is optional for system apps
+    /// such as Finder and remains required by the separate target tracker.
+    func currentFrontmostPID() -> Int32? {
+        guard let pid = foregroundPID(), pid > 0 else { return nil }
+        return pid
     }
 
     @objc private func receive(_ notification: Notification) {
@@ -53,7 +57,6 @@ final class FocusMonitor: NSObject {
             kind = .termination
             if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
                 terminatedPID = app.processIdentifier
-                registry.remove(pid: app.processIdentifier)
             }
         case NSWorkspace.activeSpaceDidChangeNotification: kind = .space
         case NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification: kind = .sleep
@@ -64,7 +67,7 @@ final class FocusMonitor: NSObject {
     }
 
     private func publish(kind: FocusEvent.Kind, terminatedPID: Int32? = nil) {
-        onEvent?(FocusEvent(receivedAt: .now, frontmost: currentInstance(), kind: kind, terminatedPID: terminatedPID))
+        onEvent?(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: kind, terminatedPID: terminatedPID))
     }
 }
 
@@ -72,7 +75,7 @@ final class FocusMonitor: NSObject {
 protocol FocusMonitoring: AnyObject {
     func start(onEvent: @escaping (FocusEvent) -> Void)
     func stop()
-    func currentInstance() -> ProcessInstance?
+    func currentFrontmostPID() -> Int32?
 }
 
 extension FocusMonitor: FocusMonitoring {}
