@@ -65,9 +65,25 @@ private struct DiagnosticView: View {
                 .textSelection(.enabled)
             Text(controller.measurementMessage).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Material: hudWindow / active / behindWindow")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Calibration: 1 second. Continuous-drag timing and sheet protection are unvalidated.")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Material candidate").font(.headline)
+                Picker("Material candidate", selection: Binding(
+                    get: { controller.materialTier },
+                    set: { controller.setMaterialTier($0) })) {
+                        ForEach(MaterialTier.allCases, id: \.self) { tier in
+                            Text(tier.summary).tag(tier)
+                        }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                Text(controller.materialParameterSummary)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Transition: " + controller.transitionSummary)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Calibration: 1 second. Continuous-drag timing, crossfade presentation timing and sheet protection are unvalidated.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Label(controller.experimentMessage, systemImage: "exclamationmark.triangle")

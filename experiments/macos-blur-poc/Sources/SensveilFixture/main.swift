@@ -37,7 +37,7 @@ final class FixtureAppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentRect: NSRect(origin: origin, size: NSSize(width: 640, height: 560)),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
-        window.title = duplicate ? "Synthetic Duplicate" : "Synthetic Fixture \(index + 1)"
+        window.title = duplicate ? "Synthetic Duplicate \(windows.count + 1)" : "Synthetic Fixture \(index + 1)"
         window.identifier = NSUserInterfaceItemIdentifier(duplicate ? "duplicate-\(windows.count)" : "fixture-\(index)")
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 600, height: 520)

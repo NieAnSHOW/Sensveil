@@ -10,6 +10,7 @@ final class PoCController: ObservableObject {
     @Published private(set) var selectedBundleIdentifier: String?
     @Published private(set) var selectedApplication: NSRunningApplication?
     @Published private(set) var isExperimentEnabled = false
+    @Published private(set) var materialTier: MaterialTier = .standard
     @Published private(set) var accessibilityPermission: PermissionState = .unknown
     @Published private(set) var screenCapturePermission: PermissionState = .unknown
     @Published private(set) var targetMessage = "No target selected"
@@ -136,8 +137,10 @@ final class PoCController: ObservableObject {
             let accepted = snapshot.windows.count
             let rejected = snapshot.issues.count
             let reasons = Set(snapshot.issues.map(\.reason)).sorted().joined(separator: "; ")
-            self.windowMessage = "Matched \(accepted) / CG \(snapshot.cgCount) / AX \(snapshot.axCount); issues \(rejected); minimized \(snapshot.minimizedCount)"
+            let excluded = Set(snapshot.exclusions.map(\.kind.rawValue)).sorted().joined(separator: ", ")
+            self.windowMessage = "Matched \(accepted) / CG \(snapshot.cgCount) / AX \(snapshot.axCount); issues \(rejected); excluded \(snapshot.exclusions.count); minimized \(snapshot.minimizedCount)"
             if !reasons.isEmpty { self.windowMessage += "\n" + reasons }
+            if !excluded.isEmpty { self.windowMessage += "\nExcluded (never protected): " + excluded }
             self.accessibilityPermission = self.permissions.accessibilityStatus()
             self.measurements.record(MeasurementEvent(phase: .snapshotReady, windowCount: accepted,
                                                        failures: snapshot.issues.map(\.kind)))
@@ -158,6 +161,18 @@ final class PoCController: ObservableObject {
         experimentMessage = enabled ? "Experiment enabled; protection not validated" : "Experiment not validated"
         notifyStateChange()
     }
+
+    /// Operator-selected material candidate. An existing overlay re-anchors before it re-crossfades.
+    func setMaterialTier(_ tier: MaterialTier) {
+        guard tier != materialTier else { return }
+        materialTier = tier
+        overlayCoordinator.setTier(tier)
+        notifyStateChange()
+    }
+
+    var materialParameterSummary: String { overlayCoordinator.parameterSummary }
+
+    var transitionSummary: String { overlayCoordinator.transitionSummary }
 
     func refreshPermissions() {
         let previousPermission = accessibilityPermission

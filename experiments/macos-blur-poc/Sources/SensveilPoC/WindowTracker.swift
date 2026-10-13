@@ -8,11 +8,21 @@ struct WindowIssue: Equatable {
     let reason: String
 }
 
+/// A recognised window that is deliberately not protected. Exclusions always fail closed —
+/// the window never enters the protected set — but they do not block the rest of the
+/// snapshot, so one auxiliary window (menu, tooltip, sheet) cannot void validated windows.
+struct WindowExclusion: Equatable {
+    enum Kind: String { case sheet, dialog, floating, nonstandardWindow, auxiliaryLayer }
+    let kind: Kind
+    let reason: String
+}
+
 struct WindowSnapshot {
     let target: ProcessInstance
     let receivedAt: ContinuousClock.Instant
     let windows: [WindowCandidate]
     let issues: [WindowIssue]
+    let exclusions: [WindowExclusion]
     let minimizedCount: Int
     let cgCount: Int
     let axCount: Int
@@ -20,7 +30,7 @@ struct WindowSnapshot {
 
     static func unavailable(_ target: ProcessInstance, kind: WindowIssue.Kind, reason: String) -> Self {
         Self(target: target, receivedAt: .now, windows: [], issues: [WindowIssue(kind: kind, reason: reason)],
-             minimizedCount: 0, cgCount: 0, axCount: 0, notificationFallback: true)
+             exclusions: [], minimizedCount: 0, cgCount: 0, axCount: 0, notificationFallback: true)
     }
 }
 
@@ -118,24 +128,38 @@ final class WindowTracker {
             cg.append(WindowCandidate(key: WindowKey(process: target, cgWindowID: number.uint32Value), bounds: rect,
                                       isOnScreen: visible.boolValue, layer: layer.intValue))
         }
+        // Classification runs before matching: only standard top-level AX windows are
+        // protection candidates. Sheets, dialogs, floating and other window kinds are
+        // recorded as fail-closed exclusions instead of blocking the whole snapshot.
         var ax: [AXWindowCandidate] = []
+        var auxiliary: [(kind: WindowExclusion.Kind, reason: String, bounds: CGRect?)] = []
+        var exclusions: [WindowExclusion] = []
         var minimizedCount = 0
         for (index, element) in elements.enumerated() {
-            guard attribute(element, kAXRoleAttribute) as? String == kAXWindowRole,
-                  attribute(element, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole else {
-                issues.append(WindowIssue(kind: .unsupported, reason: "Nonstandard AX window is not validated")); continue
+            let role = attribute(element, kAXRoleAttribute) as? String
+            let subrole = attribute(element, kAXSubroleAttribute) as? String
+            guard role == kAXWindowRole, subrole == kAXStandardWindowSubrole else {
+                let classified = Self.classify(role: role, subrole: subrole)
+                auxiliary.append((classified.kind, classified.reason, Self.rect(point(element), size(element))))
+                exclusions.append(WindowExclusion(kind: classified.kind, reason: classified.reason))
+                continue
             }
             guard let minimized = attribute(element, kAXMinimizedAttribute) as? Bool else {
                 issues.append(WindowIssue(kind: .unsupported, reason: "Window minimization state is unavailable")); continue
             }
             if minimized { minimizedCount += 1; continue }
-            guard let position = point(element), let size = size(element) else {
+            guard let position = point(element), let elementSize = size(element) else {
                 issues.append(WindowIssue(kind: .unsupported, reason: "AX window geometry is unavailable")); continue
             }
-            ax.append(AXWindowCandidate(token: index, process: target, bounds: CGRect(origin: position, size: size), isMinimized: false))
-            if let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement],
-               children.contains(where: { attribute($0, kAXRoleAttribute) as? String == kAXSheetRole }) {
-                issues.append(WindowIssue(kind: .unsupported, reason: "Sheet protection has not been validated"))
+            ax.append(AXWindowCandidate(token: index, process: target, bounds: CGRect(origin: position, size: elementSize), isMinimized: false))
+            // A sheet is exposed as an AXSheet child of its parent, not as an entry of
+            // kAXWindowsAttribute (measured), so its public CG identity is paired here.
+            if let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
+                for child in children where attribute(child, kAXRoleAttribute) as? String == kAXSheetRole {
+                    let reason = "Sheet windows are not validated for protection"
+                    exclusions.append(WindowExclusion(kind: .sheet, reason: reason))
+                    auxiliary.append((.sheet, reason, Self.rect(point(child), size(child))))
+                }
             }
         }
         let matches = WindowMatcher.matchAll(ax: ax, cg: cg)
@@ -150,14 +174,48 @@ final class WindowTracker {
         }
         let acceptedKeys = Set(accepted.map(\.key))
         for candidate in cg where !acceptedKeys.contains(candidate.key) {
-            issues.append(WindowIssue(kind: .unsupported, reason: candidate.layer == 0
-                                     ? "Visible CG window lacks a validated AX mapping"
-                                     : "Non-normal CG window layer is unsupported"))
+            guard candidate.layer == 0 else {
+                exclusions.append(WindowExclusion(kind: .auxiliaryLayer,
+                                                 reason: "Non-normal CG window layer is excluded (menus, status items, tooltips)"))
+                continue
+            }
+            // A layer-0 CG window explained by a non-standard AX window is already reported as
+            // excluded. Only a layer-0 window with no AX identity at all can be unprotectable
+            // content the tracker cannot account for, so that case still blocks the snapshot.
+            guard !auxiliary.contains(where: { Self.sameGeometry(candidate.bounds, $0.bounds) }) else { continue }
+            issues.append(WindowIssue(kind: .unsupported, reason: "Visible layer-0 CG window has no validated AX mapping"))
         }
+        var seen = Set<String>()
+        let deduplicated = exclusions.filter { seen.insert("\($0.kind.rawValue)|\($0.reason)").inserted }
         if self.target == target { configureObserver(application: application, target: target) }
         return WindowSnapshot(target: target, receivedAt: .now, windows: accepted, issues: issues,
-                              minimizedCount: minimizedCount, cgCount: cg.count, axCount: elements.count,
-                              notificationFallback: notificationFallback)
+                              exclusions: deduplicated, minimizedCount: minimizedCount, cgCount: cg.count,
+                              axCount: elements.count, notificationFallback: notificationFallback)
+    }
+
+    private static func classify(role: String?, subrole: String?) -> (kind: WindowExclusion.Kind, reason: String) {
+        if role == kAXSheetRole { return (.sheet, "Sheet windows are not validated for protection") }
+        switch subrole {
+        case kAXDialogSubrole, kAXSystemDialogSubrole:
+            return (.dialog, "Dialog windows are not validated for protection")
+        case kAXFloatingWindowSubrole, kAXSystemFloatingWindowSubrole:
+            return (.floating, "Floating windows are not validated for protection")
+        default:
+            return (.nonstandardWindow,
+                    "Unvalidated AX window kind (role \(role ?? "none") / subrole \(subrole ?? "none"))")
+        }
+    }
+
+    private static func rect(_ position: CGPoint?, _ size: CGSize?) -> CGRect? {
+        guard let position, let size, size.width > 0, size.height > 0 else { return nil }
+        return CGRect(origin: position, size: size)
+    }
+
+    /// Same 1pt tolerance as `WindowMatcher`, so the exclusion mapping stays consistent with matching.
+    private static func sameGeometry(_ lhs: CGRect, _ other: CGRect?) -> Bool {
+        guard let other, !lhs.isNull, !other.isNull else { return false }
+        return abs(lhs.minX - other.minX) <= 1 && abs(lhs.maxX - other.maxX) <= 1 &&
+            abs(lhs.minY - other.minY) <= 1 && abs(lhs.maxY - other.maxY) <= 1
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
