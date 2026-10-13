@@ -13,7 +13,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "PoCCore"),
-        .target(name: "Sensveil", dependencies: ["PoCCore"]),
+        .target(
+            name: "Sensveil",
+            dependencies: ["PoCCore"],
+            resources: [.process("Resources")]
+        ),
         .executableTarget(name: "SensveilApp", dependencies: ["Sensveil"]),
         .executableTarget(name: "SensveilPoC", dependencies: ["PoCCore"]),
         .executableTarget(name: "SensveilFixture"),

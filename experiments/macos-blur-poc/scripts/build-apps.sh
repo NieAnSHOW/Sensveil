@@ -32,6 +32,9 @@ for name in Sensveil SensveilPoC SensveilFixture; do
     if [[ "$name" == Sensveil ]]; then
         mkdir -p "$app_path/Contents/Resources"
         cp "$experiment_root/.build/Sensveil.icns" "$app_path/Contents/Resources/Sensveil.icns"
+        resource_bundle="$app_path/Contents/Resources/SensveilBlurPoC_Sensveil.bundle"
+        rm -rf "$resource_bundle"
+        cp -R "$binary_path/SensveilBlurPoC_Sensveil.bundle" "$resource_bundle"
     fi
     chmod +x "$app_path/Contents/MacOS/$name"
     plutil -lint "$app_path/Contents/Info.plist"
