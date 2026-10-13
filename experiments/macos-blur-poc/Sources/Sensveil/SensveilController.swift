@@ -45,6 +45,11 @@ public final class SensveilController: ObservableObject {
         protectionCoordinator.scheduleEvaluation
     }
 
+    /// Bundled holiday calendar coverage (years and versions) for display.
+    public var holidayCoverageDescription: String {
+        protectionCoordinator.holidayCoverageDescription
+    }
+
     public func setGlobalPause(_ paused: Bool) {
         guard !configurationLoadFailed else { return }
         var updated = configuration

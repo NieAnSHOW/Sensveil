@@ -11,20 +11,25 @@ public struct ManagementView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: "eye.slash.fill").font(.system(size: 28)).foregroundStyle(.tint)
-                Text("Sensveil").font(.title.bold())
-                Spacer()
-                Toggle("暂停保护", isOn: Binding(get: { controller.configuration.isGloballyPaused }, set: { controller.setGlobalPause($0) }))
-                    .toggleStyle(.switch).fixedSize().disabled(controller.isConfigurationReadOnly)
-            }
-            Divider()
-            HStack {
-                Text("防窥应用").font(.headline)
-                Spacer()
-                Text("\(controller.configuration.applications.count) / 2").monospacedDigit().foregroundStyle(.secondary)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "eye.slash.fill").font(.system(size: 28)).foregroundStyle(.tint)
+                    Text("Sensveil").font(.title.bold())
+                    Spacer()
+                    Toggle("暂停保护", isOn: Binding(get: { controller.configuration.isGloballyPaused }, set: { controller.setGlobalPause($0) }))
+                        .toggleStyle(.switch).fixedSize().disabled(controller.isConfigurationReadOnly)
+                }
+                Divider()
+                DisclosureGroup("保护设置") {
+                    ProtectionSettingsView(controller: controller).padding(.top, 6)
+                }
+                Divider()
+                HStack {
+                    Text("防窥应用").font(.headline)
+                    Spacer()
+                    Text("\(controller.configuration.applications.count) / 2").monospacedDigit().foregroundStyle(.secondary)
+                }
             if controller.configuration.applications.isEmpty {
                 Text("尚未添加应用").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 16)
             } else {
@@ -45,7 +50,7 @@ public struct ManagementView: View {
                 Button { controller.refreshApplications() } label: { Image(systemName: "arrow.clockwise") }.help("刷新应用列表")
             }
             TextField("搜索名称或应用标识", text: $controller.searchText).textFieldStyle(.roundedBorder)
-            List(controller.applications) { application in
+            ForEach(controller.applications) { application in
                 HStack(spacing: 10) {
                     appIcon(application.iconData)
                     appIdentity(application.displayName, bundleIdentifier: application.bundleIdentifier)
@@ -57,7 +62,7 @@ public struct ManagementView: View {
                             .help("添加 \(application.displayName)").disabled(!controller.canAddApplication)
                     }
                 }.padding(.vertical, 3)
-            }.frame(minHeight: 100)
+            }
             Divider()
             HStack {
                 Label("辅助功能", systemImage: "accessibility")
@@ -76,6 +81,7 @@ public struct ManagementView: View {
                 }.padding(.top, 6)
             }
             Toggle("登录启动（首期暂未实现）", isOn: .constant(false)).disabled(true)
+            }
         }
         .padding(20)
         .frame(minWidth: 520, minHeight: 600)

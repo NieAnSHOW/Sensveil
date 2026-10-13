@@ -124,6 +124,11 @@ public final class WindowProtectionCoordinator {
         statuses[bundleIdentifier] ?? .notRunning
     }
 
+    /// Human-readable bundled holiday coverage for display.
+    public var holidayCoverageDescription: String {
+        holidays.coverageDescription()
+    }
+
     public func removeAllOverlays() {
         runtime.removeAllOverlays()
     }
