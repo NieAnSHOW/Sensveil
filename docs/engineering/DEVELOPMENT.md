@@ -13,9 +13,13 @@ swift test --package-path experiments/macos-blur-poc
 bash experiments/macos-blur-poc/scripts/build-apps.sh
 ```
 
-测试验证窗口匹配、坐标、状态、进程世代、配置、免费额度、协调器和菜单动作规则。构建脚本生成 `experiments/macos-blur-poc/.build/apps/` 下的 `Sensveil.app`、`SensveilPoC.app` 与 `SensveilFixture.app`，检查 plist，并执行 ad-hoc 签名与验证。包无第三方依赖，需要可用的 Xcode/Swift/macOS SDK；最低构建目标为 macOS 14.0，macOS 14 与 Intel 的实际运行仍未测。
+测试验证窗口匹配、坐标、状态、进程世代、配置、免费额度、协调器和菜单动作规则。构建脚本生成 `experiments/macos-blur-poc/.build/apps/` 下的三个 bundle，默认使用 ad-hoc 签名，并将通过 macOS 执行评估的 `Sensveil.app` 安装并启动在 `/Applications/Sensveil.app`。设置 `SENSVEIL_INSTALL=0` 可跳过安装；`SENSVEIL_INSTALL_DESTINATION` 仅接受以 `Sensveil.app` 结尾的绝对路径，父目录必须已存在。包无第三方依赖，需要可用的 Xcode/Swift/macOS SDK；最低构建目标为 macOS 14.0，macOS 14 与 Intel 的实际运行仍未测。
 
-手动启动两 app，只使用 fixture 的虚构数据。PoC 初始关闭，目标须显式选择；权限仅由用户按钮主动请求。独立录屏权限诊断不采集像素，也不放行 SCK 路线。ad-hoc 重编可能改变 TCC 身份，应记录最终二进制实际 preflight 结果，不自动重置权限。详细步骤见 [实验 README](../../experiments/macos-blur-poc/README.md)。
+手动启动 PoC 和 fixture，只使用 fixture 的虚构数据；仅产品 app 由构建脚本安装并启动。PoC 初始关闭，目标须显式选择；权限仅由用户按钮主动请求。独立录屏权限诊断不采集像素，也不放行 SCK 路线。ad-hoc 重编可能改变 TCC 身份，应记录最终二进制实际 preflight 结果，不自动重置权限。详细步骤见 [实验 README](../../experiments/macos-blur-poc/README.md)。
+
+需要证书签名时，先取得用户对该用途的授权，再通过 `SENSVEIL_SIGNING_IDENTITY` 显式指定有效身份；脚本不会扫描并自动选用证书，也不会在指定身份失败时回退。`codesign --verify --strict` 只验证包和签名完整性，不能证明证书未吊销或系统允许执行。安装前后都执行 `spctl --assess --type execute`；评估失败或证书被吊销时停止，不修改 Gatekeeper、不清除 quarantine、不重置权限。开发签名不是公证或公开发行凭据，ad-hoc 在启用正常安全策略的设备上也可能被拒绝。
+
+安装在同一父目录中暂存并验证新包，退出安装路径对应的 Sensveil 进程，将旧包重命名备份后替换；拒绝符号链接及身份不是 Sensveil 的既有目标。若启动失败或进程未保持运行，恢复旧包。应用配置和 TCC 授权记录不由脚本删除。安装需要当前用户对目标父目录有写入权限，不使用 `sudo`。
 
 ## 计划工具链
 

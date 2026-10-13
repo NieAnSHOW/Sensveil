@@ -4,6 +4,8 @@ Sensveil 是一款面向 macOS 的本地隐私防窥工具：当指定应用失�
 
 项目当前处于技术可行性验证阶段，尚无正式可下载版本。仓库已有独立的 [macOS PoC 实验和 Sensveil 菜单栏 MVP 壳](experiments/macos-blur-poc/README.md)，提供可重复的测试和 app 构建命令；MVP 可管理最多 2 款应用、暂停和恢复保护、查看即时状态。当前结论仍为 [未具备放行证据](docs/engineering/POC_RESULTS.md)，实际模糊保护待验证时会显示“无法保护”。首期目标平台为 macOS，Windows 暂缓。
 
+本地开发迭代执行 `bash experiments/macos-blur-poc/scripts/build-apps.sh` 后，将通过 macOS 执行评估的 `Sensveil.app` 安装到 `/Applications/Sensveil.app` 并确认启动。默认使用 ad-hoc 签名，重编后可能需要重新授予辅助功能权限；不会自动选用本机证书或修改系统安全设置。需要只构建不安装时设置 `SENSVEIL_INSTALL=0`。签名和安装规则见[开发说明](docs/engineering/DEVELOPMENT.md)。
+
 ## 预期产品规则
 
 - 免费版最多配置 2 款需要防窥的应用。
