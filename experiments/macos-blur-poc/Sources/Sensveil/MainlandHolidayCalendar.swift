@@ -160,3 +160,10 @@ public struct MainlandHolidayCalendar: Sendable {
         return date
     }
 }
+
+extension MainlandHolidayCalendar {
+    /// Fixed, known-valid JSON; the initializer only throws on malformed data.
+    /// Used when the bundled resource cannot be read so weekly rules and the
+    /// independent missing-year warning keep working.
+    static let empty = try! MainlandHolidayCalendar(data: Data("{\"years\":[]}".utf8))
+}

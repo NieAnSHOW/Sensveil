@@ -84,7 +84,7 @@ public struct ManagementView: View {
     }
 
     private func configuredRow(_ application: ProtectedApplication) -> some View {
-        let status = StatusPresentation(application.isEnabled ? controller.status(for: application) : .paused)
+        let status = StatusPresentation(controller.status(for: application))
         return HStack(alignment: .top, spacing: 10) {
             appIcon(application.iconData)
             VStack(alignment: .leading, spacing: 4) {

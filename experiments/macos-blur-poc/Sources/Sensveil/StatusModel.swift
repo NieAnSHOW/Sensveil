@@ -10,4 +10,7 @@ public enum ProtectionStatus: Equatable, Sendable {
     case cannotProtect(String)
     case overFreeLimit
     case paused
+    case disabled
+    case outsideSchedule
+    case noVisibleWindows
 }

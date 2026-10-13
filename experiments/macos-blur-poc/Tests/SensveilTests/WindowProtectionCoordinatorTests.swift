@@ -306,7 +306,9 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         let controller = SensveilController(configurationStore: store, catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false), protectionCoordinator: coordinator)
         XCTAssertNotNil(runtime.callback)
         controller.addApplication(ApplicationDescriptor(bundleIdentifier: bundleID, displayName: "Editor", url: directory.appendingPathComponent("Editor.app")))
-        XCTAssertGreaterThan(runtime.removeAllCount, 0)
+        // Differential configuration: a plain settings change reconciles but
+        // must not tear down unrelated overlays.
+        XCTAssertGreaterThan(runtime.reconciles.count, 1)
         controller.setGlobalPause(true)
         XCTAssertEqual(controller.status(for: application()), .paused)
         controller.removeApplication(application())
@@ -408,6 +410,127 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.status(for: bundleID), .notRunning)
         XCTAssertEqual(fixture.tracker.startCount, 0)
         XCTAssertFalse(fixture.overlays.calls.contains { $0.0.values.contains(.attemptBlur) })
+    }
+
+    func testScheduleBoundaryRemovesOverlaysAndRestoresProtection() throws {
+        var current = try date("2026-10-12T10:00:00Z") // Monday inside 09:00–18:00
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { current }, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()], schedule: Self.specifiedSchedule()))
+
+        let key = candidate(ProcessInstance(pid: 100, generation: 1), id: 1).key
+        XCTAssertEqual(runtime.reconciles.last?.0[key], .attemptBlur)
+
+        current = try date("2026-10-12T18:00:00Z") // end is exclusive
+        coordinator.processScheduleTimerFired()
+        XCTAssertEqual(coordinator.status(for: bundleID), .outsideSchedule)
+        XCTAssertGreaterThanOrEqual(runtime.removeAllCount, 1)
+
+        current = try date("2026-10-13T09:00:00Z") // next weekday window start
+        coordinator.processScheduleTimerFired()
+        XCTAssertEqual(runtime.reconciles.last?.0[key], .attemptBlur)
+    }
+
+    func testPauseResumeFollowsSchedule() throws {
+        var current = try date("2026-10-12T10:00:00Z")
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { current }, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()], schedule: Self.specifiedSchedule()))
+
+        coordinator.setGlobalPause(true)
+        XCTAssertEqual(coordinator.status(for: bundleID), .paused)
+        coordinator.setGlobalPause(false)
+        XCTAssertEqual(runtime.reconciles.last?.0.values.contains(.attemptBlur), true)
+
+        current = try date("2026-10-12T18:30:00Z")
+        coordinator.setGlobalPause(true)
+        coordinator.setGlobalPause(false)
+        XCTAssertEqual(coordinator.status(for: bundleID), .outsideSchedule)
+    }
+
+    func testDisabledApplicationKeepsDisabledAcrossPauseAndSchedule() throws {
+        var current = try date("2026-10-12T10:00:00Z")
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        runtime.observationResult = { _, _ in [:] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { current }, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        defer { coordinator.stop() }
+        let disabled = ProtectedApplication(bundleIdentifier: bundleID, displayName: "Editor", isEnabled: false)
+        coordinator.start(configuration: ProtectionConfiguration(applications: [disabled], schedule: Self.specifiedSchedule()))
+
+        XCTAssertEqual(coordinator.status(for: bundleID), .disabled)
+        coordinator.setGlobalPause(true)
+        XCTAssertEqual(coordinator.status(for: bundleID), .disabled)
+
+        current = try date("2026-10-12T20:00:00Z")
+        coordinator.setGlobalPause(false)
+        coordinator.processScheduleTimerFired()
+        XCTAssertEqual(coordinator.status(for: bundleID), .disabled)
+        XCTAssertFalse(runtime.reconciles.contains { $0.0.values.contains(.attemptBlur) })
+    }
+
+    func testRunningAppWithoutVisibleWindowsReportsNoVisibleWindows() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.snapshots[instance] = snapshot(instance, windows: [])
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        XCTAssertEqual(coordinator.status(for: bundleID), .noVisibleWindows)
+
+        runtime.snapshots[instance] = snapshot(instance, windows: [], issues: [WindowIssue(kind: .ambiguous, reason: "duplicate geometry")])
+        runtime.emit(.windows)
+        guard case .cannotProtect = coordinator.status(for: bundleID) else {
+            return XCTFail("snapshot issues must keep the failure path")
+        }
+    }
+
+    func testCalendarMissingYearWarnsIndependentlyOfStatus() throws {
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        defer { coordinator.stop() }
+        var schedule = Self.specifiedSchedule()
+        schedule.followsMainlandHolidays = true
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()], schedule: schedule))
+
+        XCTAssertTrue(coordinator.scheduleEvaluation?.missingHolidayYears.contains(2026) ?? false)
+        XCTAssertEqual(coordinator.scheduleEvaluation?.isActive, true)
+        // The calendar warning must not masquerade as a protection failure.
+        XCTAssertEqual(runtime.reconciles.last?.0.values.contains(.attemptBlur), true)
+    }
+
+    func testTimeChangedEventReconcilesSchedule() throws {
+        var current = try date("2026-10-12T10:00:00Z")
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { current }, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()], schedule: Self.specifiedSchedule()))
+        let before = runtime.removeAllCount
+
+        current = try date("2026-10-12T19:00:00Z")
+        runtime.emit(.timeChanged)
+
+        XCTAssertEqual(coordinator.status(for: bundleID), .outsideSchedule)
+        XCTAssertGreaterThan(runtime.removeAllCount, before)
+    }
+
+    private static func specifiedSchedule() -> ProtectionSchedule {
+        var schedule = ProtectionSchedule.defaultConfiguration
+        schedule.mode = .specified
+        schedule.followsMainlandHolidays = false
+        return schedule
+    }
+
+    private static func gregorianGMT() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func date(_ value: String) throws -> Date {
+        let formatter = ISO8601DateFormatter()
+        return try XCTUnwrap(formatter.date(from: value), value)
     }
 
     private func configuredRuntime(instance: ProcessInstance) -> FakeProtectionRuntime {

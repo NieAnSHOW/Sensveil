@@ -2,7 +2,7 @@ import AppKit
 import PoCCore
 
 struct FocusEvent {
-    enum Kind { case startup, activation, launch, termination, screens, space, sleep, wake, windows, permissions }
+    enum Kind { case startup, activation, launch, termination, screens, space, sleep, wake, windows, permissions, timeChanged }
     let receivedAt: ContinuousClock.Instant
     let frontmostPID: Int32?
     let kind: Kind
@@ -32,6 +32,13 @@ final class FocusMonitor: NSObject {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(receive(_:)),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Schedule boundaries must re-evaluate on clock changes, time zone
+        // changes and local calendar day changes without any UI being open.
+        for name in [NSNotification.Name.NSSystemClockDidChange,
+                     NSNotification.Name.NSSystemTimeZoneDidChange,
+                     NSNotification.Name.NSCalendarDayChanged] {
+            NotificationCenter.default.addObserver(self, selector: #selector(receive(_:)), name: name, object: nil)
+        }
     }
 
     func stop() {
@@ -61,6 +68,9 @@ final class FocusMonitor: NSObject {
         case NSWorkspace.activeSpaceDidChangeNotification: kind = .space
         case NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification: kind = .sleep
         case NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification: kind = .wake
+        case NSNotification.Name.NSSystemClockDidChange,
+             NSNotification.Name.NSSystemTimeZoneDidChange,
+             NSNotification.Name.NSCalendarDayChanged: kind = .timeChanged
         default: kind = .screens
         }
         publish(kind: kind, terminatedPID: terminatedPID)

@@ -39,6 +39,12 @@ public final class SensveilController: ObservableObject {
         protectionCoordinator.status(for: application)
     }
 
+    /// Current schedule judgment for display; holiday availability warnings
+    /// surface here independently of per-app protection statuses.
+    public var scheduleEvaluation: ProtectionScheduleEvaluation? {
+        protectionCoordinator.scheduleEvaluation
+    }
+
     public func setGlobalPause(_ paused: Bool) {
         guard !configurationLoadFailed else { return }
         var updated = configuration

@@ -13,6 +13,10 @@ public final class WindowProtectionCoordinator {
         let instance: ProcessInstance
     }
 
+    /// Latest schedule judgment for the current configuration. Holiday
+    /// availability warnings live here, never inside ProtectionStatus.
+    public private(set) var scheduleEvaluation: ProtectionScheduleEvaluation?
+
     @MainActor
     protocol Runtime: AnyObject {
         func start(onEvent: @escaping (FocusEvent) -> Void)
@@ -29,6 +33,9 @@ public final class WindowProtectionCoordinator {
     }
 
     private let runtime: Runtime
+    private let now: () -> Date
+    private let calendar: () -> Calendar
+    private let holidays: MainlandHolidayCalendar
     private var configuration = ProtectionConfiguration()
     private var statuses: [String: ProtectionStatus] = [:]
     private var snapshots: [ProcessInstance: WindowSnapshot] = [:]
@@ -38,18 +45,30 @@ public final class WindowProtectionCoordinator {
     private var isPaused = false
     private var lifecycleSuspended = false
     private var overlayKeys = Set<WindowKey>()
+    private var scheduleTimer: Timer?
 
-    init(runtime: Runtime) {
+    init(
+        runtime: Runtime,
+        now: @escaping () -> Date = { Date() },
+        calendar: @escaping () -> Calendar = { Calendar.current },
+        holidays: MainlandHolidayCalendar = .empty
+    ) {
         self.runtime = runtime
+        self.now = now
+        self.calendar = calendar
+        self.holidays = holidays
     }
 
     /// Convenience production runtime. All adapters are initialized on the main
     /// actor and share one ProcessRegistry to prevent PID reuse confusion.
+    /// A failed calendar load degrades to an empty calendar; weekly rules keep
+    /// running and the missing-year warning surfaces independently.
     public convenience init() {
         let registry = ProcessRegistry()
         let focus = FocusMonitor()
         let overlays = MaterialOverlayCoordinator()
-        self.init(runtime: AdapterRuntime(focus: focus, overlays: overlays, registry: registry))
+        let holidays = (try? MainlandHolidayCalendar.loadBundled()) ?? .empty
+        self.init(runtime: AdapterRuntime(focus: focus, overlays: overlays, registry: registry), holidays: holidays)
     }
 
     public func start(configuration: ProtectionConfiguration) {
@@ -66,6 +85,7 @@ public final class WindowProtectionCoordinator {
 
     public func stop() {
         guard isStarted else { return }
+        scheduleTimer?.invalidate(); scheduleTimer = nil
         runtime.stop()
         runtime.removeAllOverlays()
         snapshots.removeAll()
@@ -77,13 +97,14 @@ public final class WindowProtectionCoordinator {
         onStatusChange?()
     }
 
+    /// Differential configuration update: overlays the new configuration no
+    /// longer protects are removed by the next reconcile (previous overlay keys
+    /// become .remove intents). A plain settings change must not tear down
+    /// overlays for windows that remain protected.
     public func setConfiguration(_ configuration: ProtectionConfiguration) {
         self.configuration = configuration
         isPaused = configuration.isGloballyPaused
         guard isStarted else { return }
-        runtime.removeAllOverlays()
-        overlayKeys.removeAll()
-        snapshots.removeAll()
         reconcile()
     }
 
@@ -130,16 +151,48 @@ public final class WindowProtectionCoordinator {
                 selectedInstances = selectedInstances.mapValues { $0.filter { $0.pid != pid } }
                 runtime.removeAllOverlays()
             }
-        case .launch, .activation, .startup, .windows, .permissions:
+        case .launch, .activation, .startup, .windows, .permissions, .timeChanged:
             break
         }
         reconcile()
+    }
+
+    /// Fired by the single one-shot boundary timer. Internal so tests can
+    /// advance an injected clock and drive it deterministically.
+    func processScheduleTimerFired() {
+        reconcile()
+    }
+
+    /// Re-evaluates the schedule and rearms the unique one-shot boundary timer
+    /// on the main RunLoop common modes, so menu interaction or dragging cannot
+    /// postpone a schedule boundary indefinitely.
+    private func refreshScheduleEvaluationAndRearmTimer() {
+        scheduleEvaluation = evaluateProtectionSchedule(
+            configuration.schedule, at: now(), calendar: calendar(), holidays: holidays)
+        scheduleTimer?.invalidate()
+        scheduleTimer = nil
+        guard isStarted, !lifecycleSuspended else { return }
+        let interval = scheduleEvaluation?.nextEvaluation.timeIntervalSince(now()) ?? 0
+        guard interval > 0 else { return }
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.processScheduleTimerFired() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        scheduleTimer = timer
+    }
+
+    /// True when the current configuration's protection schedule is inactive
+    /// right now. All-day mode is always active.
+    private var isOutsideSchedule: Bool {
+        guard configuration.schedule.mode == .specified else { return false }
+        return !(scheduleEvaluation?.isActive ?? true)
     }
 
     private func reconcile() {
         guard isStarted else { return }
         defer { onStatusChange?() }
         statuses.removeAll()
+        refreshScheduleEvaluationAndRearmTimer()
         let apps = configuration.applications.filter(\.isEnabled)
         if configuration.applications.count > ConfigurationStore.freeApplicationLimit {
             statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .overFreeLimit) })
@@ -148,6 +201,23 @@ public final class WindowProtectionCoordinator {
             overlayKeys.removeAll()
             snapshots.removeAll()
             selectedInstances.removeAll()
+            return
+        }
+        // Outside the configured schedule: remove layers and stop window
+        // tracking, but keep launch/focus listeners so entering the schedule
+        // re-enumerates current state instead of reusing stale geometry.
+        if isOutsideSchedule {
+            runtime.removeAllOverlays()
+            runtime.retainTrackers(for: [])
+            overlayKeys.removeAll()
+            snapshots.removeAll()
+            selectedInstances.removeAll()
+            for app in configuration.applications {
+                guard app.isEnabled else { statuses[app.bundleIdentifier] = .disabled; continue }
+                if isPaused || lifecycleSuspended { statuses[app.bundleIdentifier] = .paused; continue }
+                let running = !runtime.runningInstances(for: app.bundleIdentifier).isEmpty
+                statuses[app.bundleIdentifier] = running ? .outsideSchedule : .notRunning
+            }
             return
         }
         var targets: [(bundle: String, instance: ProcessInstance)] = []
@@ -209,10 +279,18 @@ public final class WindowProtectionCoordinator {
             if isPaused || lifecycleSuspended { statuses[app.bundleIdentifier] = .paused; continue }
             guard !appTargets.isEmpty else { statuses[app.bundleIdentifier] = .notRunning; continue }
             if appTargets.contains(where: { $0.instance.pid == frontmostPID }) { statuses[app.bundleIdentifier] = .foreground; continue }
+            let appSnapshotValues = snapshotsFor(appTargets, snapshots: snapshots)
+            // A running app with no visible, issue-free window has nothing to
+            // protect; this is not a blur failure.
+            if !appSnapshotValues.isEmpty,
+               appSnapshotValues.allSatisfy({ $0.windows.isEmpty && $0.issues.isEmpty }) {
+                statuses[app.bundleIdentifier] = .noVisibleWindows
+                continue
+            }
             let appKeys = Set(appTargets.flatMap { instance in snapshots[instance.instance]?.windows.map(\.key) ?? [] })
             let appIntents = intents.filter { appKeys.contains($0.key) }
             let appObservations = observations.filter { appKeys.contains($0.key) }
-            let failures = snapshotsFor(appTargets, snapshots: snapshots).flatMap { $0.issues.map { issueSummary($0) } }
+            let failures = appSnapshotValues.flatMap { $0.issues.map { issueSummary($0) } }
                 + appObservations.compactMap { _, value in if case .failed(let reason) = value { return sanitize(reason) }; return nil }
                 + appIntents.compactMap { _, value in if case .cannotProtect(let reason) = value { return sanitize(reason) }; return nil }
             let submitted = appObservations.values.contains { $0 == OverlayObservation.requestSubmitted }
@@ -228,7 +306,7 @@ public final class WindowProtectionCoordinator {
                 statuses[app.bundleIdentifier] = .cannotProtect("No validated blur evidence is available.")
             }
         }
-        for app in configuration.applications where !apps.contains(app) { statuses[app.bundleIdentifier] = .notRunning }
+        for app in configuration.applications where !apps.contains(app) { statuses[app.bundleIdentifier] = .disabled }
     }
 
 

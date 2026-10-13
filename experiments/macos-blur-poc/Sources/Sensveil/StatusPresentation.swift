@@ -23,6 +23,12 @@ public struct StatusPresentation: Equatable, Sendable {
             title = "超出免费版数量"; detail = "请保留最多 2 个应用后恢复保护"; symbol = "exclamationmark.circle"
         case .paused:
             title = "已暂停"; detail = "暂停期间不保护窗口"; symbol = "pause.circle"
+        case .disabled:
+            title = "未开启"; detail = "单应用保护未开启"; symbol = "power"
+        case .outsideSchedule:
+            title = "非保护时段"; detail = "当前不在配置的保护时段内"; symbol = "clock.badge.exclamationmark"
+        case .noVisibleWindows:
+            title = "无可见窗口"; detail = "应用运行中没有可保护的可见窗口"; symbol = "rectangle.on.rectangle.slash"
         }
     }
 
