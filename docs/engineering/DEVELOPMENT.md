@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-仓库在 `experiments/macos-blur-poc/` 的独立 Swift 6/AppKit 包内已有 Sensveil 菜单栏 MVP 外壳、配置/免费额度规则与窗口协调运行时，以及 PoC/合成 fixture。当前 59 个测试和三个 app 的 release 构建已在 arm64 主机执行；[MVP 验证边界](MVP_VALIDATION.md) 记录实际命令与未测项。真实模糊仍未验证，材料请求状态保持“无法保护”；历史实验仍为 [未具备放行证据](POC_RESULTS.md)。发布、Developer ID 签名、公证、支付、试用和激活流程尚未建立。
+仓库在 `experiments/macos-blur-poc/` 的独立 Swift 6/AppKit 包内已有 Sensveil 菜单栏 MVP 外壳、配置/免费额度规则与窗口协调运行时、全局保护设置（模糊三档/守护文案开关/保护时段）、每周与节假日时段判定、内置中国大陆节假日日历，以及 PoC/合成 fixture。当前 111 个测试和三个 app 的 release 构建已在 arm64 主机执行；[MVP 验证边界](MVP_VALIDATION.md) 记录实际命令与未测项。真实模糊仍未验证，材料请求状态保持“无法保护”；历史实验仍为 [未具备放行证据](POC_RESULTS.md)。发布、Developer ID 签名、公证、支付、试用和激活流程尚未建立。
 
 ## 可重复的实验命令
 

@@ -1,6 +1,15 @@
 # Sensveil MVP 验证边界
 
-日期：2026-10-12。实现基线：`d505e43`（菜单栏 MVP 外壳）。结论：**自动化规则与本机构建通过；真实模糊未验证，不能放行隐私保护或商业发布。** 本文不改变 [PRD](../product/PRD.md) 的验收门槛；历史实验观察见 [POC_RESULTS](POC_RESULTS.md)，不得把旧 PoC 权限和画面观察移作当前 Sensveil 二进制的证据。
+日期：2026-10-12（首轮）；2026-10-13 更新（防窥效果与保护时段开发轮）。实现基线：`d505e43`（菜单栏 MVP 外壳）+ 本轮 `cab1b35`。结论：**自动化规则与本机构建通过；时段/设置/内置日历功能已实现并经注入时钟与打包资源验证；真实模糊仍未验证，不能放行隐私保护或商业发布。** 本文不改变 [PRD](../product/PRD.md) 的验收门槛；历史实验观察见 [POC_RESULTS](POC_RESULTS.md)，不得把旧 PoC 权限和画面观察移作当前 Sensveil 二进制的证据。
+
+## 2026-10-13 防窥效果与保护时段开发轮
+
+按[实施计划](../superpowers/plans/2026-10-13-protection-effects-and-schedule.md)完成：
+
+- **已实现（代码 + 自动化验证）**：全局设置 schema 2（模糊三档/守护文案开关/保护时段，schema 1 迁移保留应用/排序/暂停，读取不覆写、下次保存升级）；`ProtectionSchedule` 归一化与 `evaluateProtectionSchedule` 确定性判定（每周/节假日/调休、跨午夜归属开始日、左闭右开、本机墙钟、DST 春跳秋返、缺年退回每周规则并独立警告）；内置 2026 年官方节假日日历（国办发明电〔2025〕7号，39 天逐日核对，离线、随版本内置、无网络请求）；协调器时间事件（系统时钟/时区/日历日变更通知 + 唯一一次性边界定时器，主 RunLoop common modes）、状态优先级（超额→未开启→暂停→未运行→非保护时段→前台→窗口结果）与差分配置更新；管理页“保护设置”（三档 Picker、文案开关、全天/指定、7 天多区间编辑器、跨午夜“次日”与 24:00 显示、节假日编辑器、时区/时段/覆盖年份展示、草稿式保存）。
+- **本机构建与安装证据**：`swift test` 111 个测试 0 失败；`build-apps.sh` release 构建 + plist lint + ad-hoc 严格签名通过，产品已安装并启动于 `/Applications/Sensveil.app`（进程保持运行）。安装产物内 `SensveilBlurPoC_Sensveil.bundle/mainland-holidays.json` 存在；以安装包副本内的探针二进制按产品同路径（`Bundle.main.resourceURL` 固定 bundle 名）实际加载成功，返回 2026 覆盖且 10-01=rest、10-10=makeupWorkday、10-11/2027=nil。真实用户 schema 1 配置在加载后字节未变（mtime 不变），验证“读取迁移不覆写”。
+- **仍为 UNMEASURED / 未实现**：三档模糊真实强度、轮廓匹配、守护文案绘制、200ms 安全过渡的产品集成（Task 8）被材料 Gate 阻断——F-03/F-04/F-05 需人工 GUI 会话与 3 名评估者，当前评估者 0；Gate 状态见 [POC_RESULTS](POC_RESULTS.md)。时段功能的真实 GUI 边界观察（关闭管理页等边界、睡眠唤醒、时区切换实测）待后续人工会话；本轮仅完成注入时钟测试与安装启动验证。
+
 
 ## 当前实现范围
 
