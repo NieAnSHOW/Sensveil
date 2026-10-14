@@ -145,6 +145,8 @@ public final class ApplicationCatalog {
         lastError = nil
         let selectedURL: URL? = await withCheckedContinuation { continuation in
             let panel = NSOpenPanel()
+            panel.title = L10n.text("选择应用")
+            panel.prompt = L10n.text("添加")
             panel.canChooseFiles = true
             panel.canChooseDirectories = false
             panel.allowsMultipleSelection = false

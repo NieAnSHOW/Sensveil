@@ -140,11 +140,13 @@ public struct ProtectionSettingsView: View {
     private static let weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     private static let minuteFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
 
     @ObservedObject private var controller: SensveilController
+    @ObservedObject private var language = LanguagePreferences.shared
     @StateObject private var session: ProtectionSettingsSession
     private let page: ProtectionSettingsPage
 
@@ -164,26 +166,27 @@ public struct ProtectionSettingsView: View {
             if page == .effects {
                 effectsEditor
             } else {
-                Section("保护模式") {
-                    Picker("保护时段", selection: $session.scheduleDraft.mode) {
-                        Text("全天保护").tag(ProtectionScheduleMode.allDay)
-                        Text("指定时段").tag(ProtectionScheduleMode.specified)
-                    }.pickerStyle(.radioGroup).accessibilityLabel("保护时段模式")
+                Section(L10n.text("保护模式")) {
+                    Picker(L10n.text("保护时段"), selection: $session.scheduleDraft.mode) {
+                        Text(L10n.text("全天保护")).tag(ProtectionScheduleMode.allDay)
+                        Text(L10n.text("指定时段")).tag(ProtectionScheduleMode.specified)
+                    }.pickerStyle(.radioGroup).accessibilityLabel(L10n.text("保护时段模式"))
                 }
                 if session.scheduleDraft.mode == .specified {
-                    Section("每周安排") { scheduleEditor }
+                    Section(L10n.text("每周安排")) { scheduleEditor }
                     Section { holidayEditor }
                     if session.scheduleDraft.weeklyRanges.allSatisfy(\.isEmpty) {
                         Section {
-                            Label("指定时段为空，保存后不会保护任何应用。", systemImage: "moon.zzz")
+                            Label(L10n.text("指定时段为空，保存后不会保护任何应用。"), systemImage: "moon.zzz")
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
-                Section("当前状态（已保存的设置）") { evaluationSummary }
+                Section(L10n.text("当前状态（已保存的设置）")) { evaluationSummary }
             }
         }
         .formStyle(.grouped)
+        .environment(\.locale, language.locale)
         .disabled(controller.isConfigurationReadOnly)
         .safeAreaInset(edge: .bottom, spacing: 0) { saveBar }
     }
@@ -191,28 +194,28 @@ public struct ProtectionSettingsView: View {
     private var effectsEditor: some View {
         Group {
             Section {
-                Picker("模糊强度", selection: $session.blurLevel) {
-                    Text("标准").tag(BlurLevel.standard)
-                    Text("增强").tag(BlurLevel.enhanced)
-                    Text("最强").tag(BlurLevel.strongest)
+                Picker(L10n.text("模糊强度"), selection: $session.blurLevel) {
+                    Text(L10n.text("标准")).tag(BlurLevel.standard)
+                    Text(L10n.text("增强")).tag(BlurLevel.enhanced)
+                    Text(L10n.text("最强")).tag(BlurLevel.strongest)
                 }.pickerStyle(.segmented)
-                Text("保存后应用于受保护窗口。圆角采用外扩覆盖，当前支持本机单显示器普通窗口。")
+                Text(L10n.text("保存后应用于受保护窗口。圆角采用外扩覆盖，当前支持本机单显示器普通窗口。"))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } header: { Text("模糊效果") }
+            } header: { Text(L10n.text("模糊效果")) }
             Section {
-                Toggle("显示守护文案", isOn: $session.showsLabel)
-                Text("在受支持窗口确认保护后，显示“Sensveil 守护中”。")
+                Toggle(L10n.text("显示守护文案"), isOn: $session.showsLabel)
+                Text(L10n.text("在受支持窗口确认保护后，显示“Sensveil 守护中”。"))
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } header: { Text("守护提示") }
+            } header: { Text(L10n.text("守护提示")) }
             if ProtectionTransition.isUserSelectable {
-                Section("过渡动画") {
-                    Picker("动画时长", selection: $session.transition) {
+                Section(L10n.text("过渡动画")) {
+                    Picker(L10n.text("动画时长"), selection: $session.transition) {
                         Text("200ms").tag(ProtectionTransition.ms200)
                         Text("500ms").tag(ProtectionTransition.ms500)
                         Text("800ms").tag(ProtectionTransition.ms800)
-                        Text("关闭动画").tag(ProtectionTransition.off)
+                        Text(L10n.text("关闭动画")).tag(ProtectionTransition.off)
                     }.pickerStyle(.segmented)
                 }
             }
@@ -228,20 +231,20 @@ public struct ProtectionSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
             if let error = page == .effects ? session.effectsError : session.scheduleError {
-                Label(error, systemImage: "exclamationmark.triangle")
+                Label(L10n.text(error), systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 24)
             }
             HStack {
-                Text(hasChanges ? "有未保存的修改" : "设置已保存")
+                Text(L10n.text(hasChanges ? "有未保存的修改" : "设置已保存"))
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
-                Button("放弃修改") {
+                Button(L10n.text("放弃修改")) {
                     if page == .effects { session.discardEffects(configuration: controller.configuration) }
                     else { session.discardSchedule(configuration: controller.configuration) }
                 }.disabled(!hasChanges)
-                Button("保存设置") {
+                Button(L10n.text("保存设置")) {
                     if page == .effects { session.saveEffects(controller: controller) }
                     else { session.saveSchedule(controller: controller) }
                 }
@@ -259,22 +262,22 @@ public struct ProtectionSettingsView: View {
     @ViewBuilder
     private var scheduleEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("每周日期（可多选）").font(.headline)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), alignment: .leading)], alignment: .leading, spacing: 12) {
+            Text(L10n.text("每周日期（可多选）")).font(.headline)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), alignment: .leading)], alignment: .leading, spacing: 12) {
                 ForEach(0..<7, id: \.self) { index in
-                    Toggle(Self.weekdayLabels[index], isOn: weekdayBinding(index))
+                    Toggle(L10n.text(Self.weekdayLabels[index]), isOn: weekdayBinding(index))
                         .toggleStyle(.checkbox)
-                        .accessibilityLabel(Self.weekdayLabels[index])
+                        .accessibilityLabel(L10n.text(Self.weekdayLabels[index]))
                 }
             }
-            Text("逐一设置所选日期；取消选择会清空该日时段，保存后生效。")
+            Text(L10n.text("逐一设置所选日期；取消选择会清空该日时段，保存后生效。"))
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(session.scheduleDraft.selectedWeekdays.sorted(), id: \.self) { index in
                 VStack(alignment: .leading, spacing: 6) {
                     Divider()
                     HStack {
-                        Text(Self.weekdayLabels[index]).font(.headline)
+                        Text(L10n.text(Self.weekdayLabels[index])).font(.headline)
                         Text(daySummary(session.scheduleDraft.weeklyRanges[index]))
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -283,8 +286,8 @@ public struct ProtectionSettingsView: View {
                     }
                     Button {
                         session.scheduleDraft.weeklyRanges[index].append(newRow(after: session.scheduleDraft.weeklyRanges[index].last))
-                    } label: { Label("添加时段", systemImage: "plus") }
-                    .accessibilityLabel("为\(Self.weekdayLabels[index])添加时段")
+                    } label: { Label(L10n.text("添加时段"), systemImage: "plus") }
+                    .accessibilityLabel(L10n.format("为%@添加时段", L10n.text(Self.weekdayLabels[index])))
                 }
             }
         }
@@ -292,66 +295,75 @@ public struct ProtectionSettingsView: View {
 
     @ViewBuilder
     private var holidayEditor: some View {
-        DisclosureGroup("节假日") {
-            Toggle("跟随中国大陆法定节假日安排", isOn: $session.scheduleDraft.followsMainlandHolidays)
+        DisclosureGroup(L10n.text("节假日")) {
+            Toggle(L10n.text("跟随中国大陆法定节假日安排"), isOn: $session.scheduleDraft.followsMainlandHolidays)
             if session.scheduleDraft.followsMainlandHolidays {
                 rangeList($session.scheduleDraft.holidayRanges, title: "节假日与调休休息时段")
                 rangeList($session.scheduleDraft.makeupWorkdayRanges, title: "调休上班时段")
             }
-            Text("内置日历：\(controller.holidayCoverageDescription)").font(.caption).foregroundStyle(.secondary)
+            Text(L10n.format("内置日历：%@", L10n.text(controller.holidayCoverageDescription))).font(.caption).foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
     private func rangeList(_ ranges: Binding<[ProtectionRangeDraft]>, title: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.callout)
+            Text(L10n.text(title)).font(.callout)
             ForEach(ranges) { $row in
                 rangeRow($row)
             }
             Button {
                 ranges.wrappedValue.append(newRow(after: ranges.wrappedValue.last))
-            } label: { Label("添加时段", systemImage: "plus") }
-            .accessibilityLabel("为\(title)添加时段")
+            } label: { Label(L10n.text("添加时段"), systemImage: "plus") }
+            .accessibilityLabel(L10n.format("为%@添加时段", L10n.text(title)))
         }.padding(.leading, 12)
     }
 
     private func rangeRow(_ row: Binding<ProtectionRangeDraft>) -> some View {
         HStack(spacing: 8) {
-            DatePicker("开始", selection: startBinding(row), displayedComponents: .hourAndMinute)
-                .labelsHidden().fixedSize().accessibilityLabel("开始时间")
-            DatePicker("结束", selection: endBinding(row), displayedComponents: .hourAndMinute)
-                .labelsHidden().fixedSize().accessibilityLabel("结束时间")
+            DatePicker(L10n.text("开始"), selection: startBinding(row), displayedComponents: .hourAndMinute)
+                .labelsHidden().fixedSize().accessibilityLabel(L10n.text("开始时间"))
+            DatePicker(L10n.text("结束"), selection: endBinding(row), displayedComponents: .hourAndMinute)
+                .labelsHidden().fixedSize().accessibilityLabel(L10n.text("结束时间"))
             Text(endDisplay(row.wrappedValue))
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 .frame(minWidth: 76, alignment: .leading)
-                .accessibilityLabel("结束说明 \(endAccessibility(row.wrappedValue))")
+                .accessibilityLabel(L10n.format("结束说明 %@", endAccessibility(row.wrappedValue)))
             Spacer()
             Button {
                 removeRow(row.wrappedValue)
             } label: { Image(systemName: "minus.circle") }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("删除该时段")
+                .accessibilityLabel(L10n.text("删除该时段"))
         }
     }
 
     @ViewBuilder
     private var evaluationSummary: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("本机时区：\(TimeZone.current.identifier)").font(.caption).foregroundStyle(.secondary)
+            Text(L10n.format("本机时区：%@", TimeZone.current.identifier)).font(.caption).foregroundStyle(.secondary)
             if let evaluation = controller.scheduleEvaluation {
                 Text(evaluation.isActive
-                     ? "当前处于保护时段（\(evaluation.activeSource ?? "全天")）"
-                     : "当前不在保护时段")
+                     ? L10n.format("当前处于保护时段（%@）", localizedActiveSource(evaluation.activeSource ?? "全天"))
+                     : L10n.text("当前不在保护时段"))
                     .font(.caption)
                     .foregroundStyle(evaluation.isActive ? Color.accentColor : .secondary)
                 if !evaluation.missingHolidayYears.isEmpty {
-                    Label("节假日日历不可用/需更新：缺少 \(evaluation.missingHolidayYears.sorted().map(String.init).joined(separator: "、")) 年数据，相关日期按每周规则判断", systemImage: "exclamationmark.triangle")
+                    Label(L10n.format("节假日日历不可用/需更新：缺少 %@ 年数据，相关日期按每周规则判断", evaluation.missingHolidayYears.sorted().map(String.init).joined(separator: L10n.text("、"))), systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
-                        .accessibilityLabel("节假日日历警告")
+                        .accessibilityLabel(L10n.text("节假日日历警告"))
                 }
             }
         }
+    }
+
+    /// Keep the evaluation engine's canonical labels independent of UI language.
+    private func localizedActiveSource(_ source: String) -> String {
+        let weeklyPrefix = "每周·"
+        if source.hasPrefix(weeklyPrefix) {
+            return L10n.format("每周 · %@", L10n.text(String(source.dropFirst(weeklyPrefix.count))))
+        }
+        return L10n.text(source)
     }
 
     private func weekdayBinding(_ index: Int) -> Binding<Bool> {
@@ -362,9 +374,9 @@ public struct ProtectionSettingsView: View {
     }
 
     private func daySummary(_ rows: [ProtectionRangeDraft]) -> String {
-        guard !rows.isEmpty else { return "无时段" }
+        guard !rows.isEmpty else { return L10n.text("无时段") }
         return rows.map { "\(Self.minuteFormatter.string(from: startMinuteToDate($0.startMinute)))–\(endDisplay($0))" }
-            .joined(separator: "、")
+            .joined(separator: L10n.text("、"))
     }
 
     private func newRow(after previous: ProtectionRangeDraft?) -> ProtectionRangeDraft {
@@ -423,13 +435,13 @@ public struct ProtectionSettingsView: View {
         let end = row.endMinute
         if end == 1440 { return "24:00" }
         if end > 1440 {
-            return "次日 " + Self.minuteFormatter.string(from: startMinuteToDate(end - 1440))
+            return L10n.format("次日 %@", Self.minuteFormatter.string(from: startMinuteToDate(end - 1440)))
         }
         return Self.minuteFormatter.string(from: startMinuteToDate(end))
     }
 
     private func endAccessibility(_ row: ProtectionRangeDraft) -> String {
-        if row.endMinute == 1440 { return "当日 24:00（次日 0 点）" }
+        if row.endMinute == 1440 { return L10n.text("当日 24:00（次日 0 点）") }
         return endDisplay(row)
     }
 }

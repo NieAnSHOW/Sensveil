@@ -10,6 +10,10 @@ public final class SensveilController: ObservableObject {
     @Published public private(set) var availableApplications: [ApplicationDescriptor] = []
     @Published public private(set) var isLoadingApplications = false
     public var isConfigurationReadOnly: Bool { configurationLoadFailed }
+    /// Errors are kept as canonical keys so switching language never retains
+    /// a translated error from an earlier operation.
+    public var localizedErrorMessage: String? { errorMessage.map(L10n.text) }
+    public var localizedPauseActionTitle: String { L10n.text(pauseActionTitle) }
 
     public let catalog: ApplicationCatalog
     public let configurationStore: ConfigurationStore

@@ -5,6 +5,11 @@ public struct StatusPresentation: Equatable, Sendable {
     public let detail: String
     public let symbol: String
 
+    public var localizedTitle: String { L10n.text(title) }
+    public var localizedDetail: String {
+        detail.components(separatedBy: "；").map(L10n.text).joined(separator: L10n.text("；"))
+    }
+
     public init(_ status: ProtectionStatus) {
         switch status {
         case .notRunning:

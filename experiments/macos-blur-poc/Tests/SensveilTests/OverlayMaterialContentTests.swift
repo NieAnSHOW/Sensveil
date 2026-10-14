@@ -1,9 +1,64 @@
 import AppKit
+import PoCCore
 import XCTest
 @testable import Sensveil
 
 @MainActor
 final class OverlayMaterialContentTests: XCTestCase {
+    func testLanguageChangeUpdatesExistingLabelWithoutChangingProtectionOrTransition() {
+        let preferences = LanguagePreferences.shared
+        let original = preferences.selection
+        defer { preferences.selection = original }
+        preferences.selection = .chinese
+        let content = OverlayMaterialContent(frame: CGRect(x: 0, y: 0, width: 656, height: 608))
+        let material = content.tierEffect
+        let label = content.guardLabel
+        content.apply(settings: .defaults, protectionStatus: .protected)
+        content.beginProtectionTransition(reduceMotion: false)
+
+        preferences.selection = .english
+
+        XCTAssertEqual(label.stringValue, "Sensveil is protecting")
+        XCTAssertTrue(content.guardLabel === label)
+        XCTAssertTrue(content.tierEffect === material)
+        XCTAssertEqual(content.protectionStatus, .protected)
+        XCTAssertTrue(content.isProtectionTransitionRunning)
+        XCTAssertFalse(content.safetyEffect.isHidden)
+        XCTAssertFalse(label.isHidden)
+        preferences.selection = .chinese
+        XCTAssertEqual(label.stringValue, "Sensveil 守护中")
+        XCTAssertTrue(content.isProtectionTransitionRunning)
+        XCTAssertEqual(content.protectionStatus, .protected)
+        content.cancelProtectionTransition()
+    }
+
+    func testEnglishLabelRefitsSmallWindowAndNeverShowsUnverifiedProtection() {
+        let preferences = LanguagePreferences.shared
+        let original = preferences.selection
+        defer { preferences.selection = original }
+        preferences.selection = .chinese
+        let content = OverlayMaterialContent(frame: CGRect(x: 0, y: 0, width: 656, height: 608))
+        content.apply(settings: .defaults, protectionStatus: .protected)
+        let fittingWidth = content.guardLabel.fittingSize.width + 16 + 2 * RoundedOverlayGeometry.padding
+        content.setFrameSize(CGSize(width: fittingWidth + 1, height: 100))
+        content.layout()
+        XCTAssertFalse(content.guardLabel.isHidden)
+
+        preferences.selection = .english
+        XCTAssertEqual(content.guardLabel.stringValue, "Sensveil is protecting")
+        XCTAssertTrue(content.guardLabel.isHidden, "A longer label must hide instead of clipping")
+        XCTAssertEqual(content.protectionStatus, .protected)
+        XCTAssertEqual(content.tierEffect.material, .hudWindow)
+        preferences.selection = .chinese
+        XCTAssertFalse(content.guardLabel.isHidden)
+
+        content.setFrameSize(CGSize(width: 656, height: 608))
+        content.apply(settings: .defaults, protectionStatus: .cannotProtect("unverified"))
+        preferences.selection = .english
+        XCTAssertTrue(content.guardLabel.isHidden)
+        XCTAssertEqual(content.protectionStatus, .cannotProtect("unverified"))
+    }
+
     func testAllLevelsUsePersistentAnchorAndDistinctSelectedMaterials() {
         let content = OverlayMaterialContent(frame: CGRect(x: 0, y: 0, width: 656, height: 608))
         let tierEffect = content.tierEffect

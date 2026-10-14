@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import PoCCore
 import QuartzCore
 
@@ -6,12 +7,13 @@ import QuartzCore
 final class OverlayMaterialContent: RoundedMaterialEffect {
     let safetyEffect = NSVisualEffectView()
     let tierEffect = NSVisualEffectView()
-    let guardLabel = NSTextField(labelWithString: "Sensveil 守护中")
+    let guardLabel = NSTextField(labelWithString: L10n.text("Sensveil 守护中"))
     private(set) var settings = OverlaySettings.defaults
     private(set) var protectionStatus = ProtectionStatus.cannotProtect("Material is unverified")
     private(set) var isProtectionTransitionRunning = false
     private var transitionTicket: UUID?
     private var transitionCompletion: Task<Void, Never>?
+    private var languageSubscription: AnyCancellable?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -42,6 +44,13 @@ final class OverlayMaterialContent: RoundedMaterialEffect {
         addSubview(tierEffect)
         addSubview(guardLabel)
         apply(settings: .defaults, protectionStatus: .cannotProtect("Material is unverified"))
+        languageSubscription = LanguagePreferences.shared.changes.sink { [weak self] language in
+            guard let self else { return }
+            self.guardLabel.stringValue = L10n.text("Sensveil 守护中", language: language)
+            // Text fitting can change across languages. Relayout the same
+            // label; do not apply settings, recreate panels, or reset evidence.
+            self.layout()
+        }
     }
     required init?(coder: NSCoder) { nil }
     func apply(settings: OverlaySettings, protectionStatus: ProtectionStatus) {

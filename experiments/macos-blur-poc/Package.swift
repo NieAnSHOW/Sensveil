@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "SensveilBlurPoC",
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "PoCCore", targets: ["PoCCore"]),
