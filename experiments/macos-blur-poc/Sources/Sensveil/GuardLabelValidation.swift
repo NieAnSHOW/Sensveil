@@ -5,11 +5,23 @@ import PoCCore
 @MainActor
 public enum GuardLabelValidation {
     public static func run() async -> Int32 {
-        guard NSScreen.screens.count == 1, let screen = NSScreen.screens.first,
-              screen.backingScaleFactor == 2, MaterialAcceptanceEnvironment.current.isAccepted else {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty,
+              screens.allSatisfy({ $0.backingScaleFactor == 1 || $0.backingScaleFactor == 2 }),
+              MaterialAcceptanceEnvironment.current.isAccepted else {
             print("GUARD unsupported acceptance environment")
             return 2
         }
+        var result: Int32 = 0
+        for (index, screen) in screens.enumerated() {
+            print("GUARD display=\(index + 1)/\(screens.count) scale=\(screen.backingScaleFactor)")
+            if await run(on: screen, screens: screens) != 0 { result = 1 }
+        }
+        return result
+    }
+
+    private static func run(on screen: NSScreen, screens: [NSScreen]) async -> Int32 {
+        guard let primaryScreen = screens.first else { return 2 }
         let target = NSWindow(contentRect: CGRect(x: screen.visibleFrame.minX + 100,
             y: screen.visibleFrame.minY + 100, width: 420, height: 280),
             styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -27,10 +39,10 @@ public enum GuardLabelValidation {
         })
         defer { coordinator.removeAll(); target.close() }
         let key = WindowKey(process: .init(pid: ProcessInfo.processInfo.processIdentifier, generation: 1), cgWindowID: UInt32(target.windowNumber))
-        let layout = ScreenLayout(primaryScreenFrame: screen.frame, screenFrames: [screen.frame])
+        let layout = ScreenLayout(primaryScreenFrame: primaryScreen.frame, screenFrames: screens.map(\.frame))
         func candidate() -> WindowCandidate {
             WindowCandidate(key: key, bounds: CoordinateTransform.appKitRect(from: target.frame,
-                primaryScreenFrame: screen.frame), isOnScreen: target.isVisible, layer: 0)
+                primaryScreenFrame: primaryScreen.frame), isOnScreen: target.isVisible, layer: 0)
         }
         var checks = 0
         var passed = 0

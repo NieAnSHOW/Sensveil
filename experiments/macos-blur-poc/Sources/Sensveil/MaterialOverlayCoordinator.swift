@@ -161,6 +161,7 @@ final class MaterialOverlayCoordinator {
         let panel: any MaterialPanelPresenting
         let targetBounds: CGRect
         let protectionBounds: CGRect
+        let screenLayout: ScreenLayout
         var checkedBlurLevel: BlurLevel?
         var lastEvidence: OverlayProtectionEvidence?
     }
@@ -169,6 +170,8 @@ final class MaterialOverlayCoordinator {
         let panel: any MaterialPanelPresenting
         let ticket: UUID
         let targetBounds: CGRect
+        let protectionBounds: CGRect
+        let screenLayout: ScreenLayout
     }
 
     private var overlays: [WindowKey: Overlay] = [:]
@@ -224,6 +227,8 @@ final class MaterialOverlayCoordinator {
                    screenLayout: ScreenLayout, foregroundPID: Int32? = nil) -> [WindowKey: OverlayObservation] {
         var observations: [WindowKey: OverlayObservation] = [:]
         let attempts = Set(intents.compactMap { key, intent in intent == .attemptBlur ? key : nil })
+        // Placement evidence belongs to the complete layout that produced it.
+        for (key, overlay) in overlays where overlay.screenLayout != screenLayout { remove(key) }
         if foregroundPID == nil || reduceTransparency() || reduceMotion() || !acceptedEnvironment().isAccepted
             || intents.values.contains(where: { if case .cannotProtect = $0 { return true }; return false }) {
             removeRetiringPanels()
@@ -233,7 +238,13 @@ final class MaterialOverlayCoordinator {
             if key.process.pid != foregroundPID || candidates.count != 1 || candidates.first?.isOnScreen != true
                 || candidates.first?.layer != 0 {
                 removeRetiring(key)
-            } else if candidates.first?.bounds != retiringOverlays[key]?.targetBounds {
+            } else if let retiring = retiringOverlays[key],
+                      candidates.first?.bounds != retiring.targetBounds
+                        || retiring.screenLayout != screenLayout
+                        || !displayPlacementIsAccepted(protectionBounds: retiring.protectionBounds,
+                            screenLayout: screenLayout, backingScale: retiring.panel.backingScale)
+                        || retiring.panel.presentationFrame != CoordinateTransform.appKitRect(
+                            from: retiring.protectionBounds, primaryScreenFrame: screenLayout.primaryScreenFrame) {
                 removeRetiring(key)
             }
         }
@@ -244,8 +255,11 @@ final class MaterialOverlayCoordinator {
                let overlay = overlays[key], overlay.lastEvidence != nil,
                candidates.count == 1, candidates.first?.bounds == overlay.targetBounds,
                candidates.first?.isOnScreen == true, candidates.first?.layer == 0,
-               overlay.panel.presentationFrame != nil,
-               acceptedEnvironment().isAccepted, screenLayout.screenFrames.count == 1,
+               overlay.panel.presentationFrame == CoordinateTransform.appKitRect(from: overlay.protectionBounds,
+                   primaryScreenFrame: screenLayout.primaryScreenFrame),
+               acceptedEnvironment().isAccepted,
+               displayPlacementIsAccepted(protectionBounds: overlay.protectionBounds,
+                   screenLayout: screenLayout, backingScale: overlay.panel.backingScale),
                settings.protectionTransition.duration != nil,
                !reduceMotion(), !reduceTransparency() {
                 retire(key)
@@ -335,16 +349,17 @@ final class MaterialOverlayCoordinator {
             // Moving/resizing expires the prior placement; never animate across exposed content.
             if overlays[key]?.targetBounds != window.bounds { remove(key) }
             if overlays[key] == nil {
-                overlays[key] = Overlay(panel: makePanel(rect), targetBounds: window.bounds, protectionBounds: geometry.protectionBounds, checkedBlurLevel: nil, lastEvidence: nil)
+                overlays[key] = Overlay(panel: makePanel(rect), targetBounds: window.bounds,
+                    protectionBounds: geometry.protectionBounds, screenLayout: screenLayout,
+                    checkedBlurLevel: nil, lastEvidence: nil)
                 overlays[key]?.panel.setSettings(settings)
             }
             let priorCheck = overlays[key]?.checkedBlurLevel == settings.blurLevel
             overlays[key]?.panel.submit(frame: rect, above: key.cgWindowID)
             guard let overlay = overlays[key] else { continue }
             let locallyAccepted = acceptedEnvironment().isAccepted
-                && overlay.panel.backingScale == 2
-                && screenLayout.screenFrames.count == 1
-                && screenLayout.screenFrames.contains(where: { valid($0) && $0.contains(rect) && targetRect != $0 })
+                && displayPlacementIsAccepted(protectionBounds: overlay.protectionBounds,
+                    screenLayout: screenLayout, backingScale: overlay.panel.backingScale)
             guard locallyAccepted else {
                 remove(key)
                 observations[key] = .failed(reason: "Material has not been accepted for this system, display or window placement")
@@ -386,7 +401,9 @@ final class MaterialOverlayCoordinator {
         removeRetiring(key)
         overlay.panel.setProtectionEvidence(nil)
         let ticket = UUID()
-        retiringOverlays[key] = RetiringOverlay(panel: overlay.panel, ticket: ticket, targetBounds: overlay.targetBounds)
+        retiringOverlays[key] = RetiringOverlay(panel: overlay.panel, ticket: ticket,
+            targetBounds: overlay.targetBounds, protectionBounds: overlay.protectionBounds,
+            screenLayout: overlay.screenLayout)
         overlay.panel.fadeOut { [weak self] in
             guard let self, self.retiringOverlays[key]?.ticket == ticket else { return }
             self.removeRetiring(key)
@@ -399,6 +416,15 @@ final class MaterialOverlayCoordinator {
 
     private func removeRetiringPanels() {
         for key in Array(retiringOverlays.keys) { removeRetiring(key) }
+    }
+
+    private func displayPlacementIsAccepted(protectionBounds: CGRect, screenLayout: ScreenLayout,
+                                            backingScale: CGFloat) -> Bool {
+        guard valid(screenLayout.primaryScreenFrame), backingScale == 1 || backingScale == 2 else { return false }
+        let rect = CoordinateTransform.appKitRect(from: protectionBounds,
+            primaryScreenFrame: screenLayout.primaryScreenFrame)
+        guard valid(rect) else { return false }
+        return screenLayout.screenFrames.filter { valid($0) && $0.contains(rect) }.count == 1
     }
 
     private func valid(_ rect: CGRect) -> Bool {

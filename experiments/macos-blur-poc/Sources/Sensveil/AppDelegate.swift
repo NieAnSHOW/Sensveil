@@ -44,25 +44,8 @@ public final class SensveilAppDelegate: NSObject, NSApplicationDelegate, NSMenuD
         if let existing = managementWindow {
             window = existing
         } else {
-            let view = ManagementView(controller: controller, permissions: permissions, navigation: navigation)
-            window = ManagementWindow(contentViewController: NSHostingController(rootView: view))
-            // Retain the title for accessibility and window identity while letting
-            // native content/material extend behind the transparent title area.
-            window.title = "Sensveil"
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.titlebarSeparatorStyle = .none
-            window.toolbarStyle = .unified
-            window.collectionBehavior.insert(.fullScreenPrimary)
-            // ManagementWindow routes only the system's reserved title area
-            // to dragging; the content area keeps its own mouse handling.
-            window.isMovableByWindowBackground = false
-            window.setContentSize(NSSize(width: 920, height: 700))
-            window.contentMinSize = NSSize(width: 780, height: 560)
+            window = ManagementWindow(controller: controller, permissions: permissions, navigation: navigation)
             window.center()
-            window.setFrameAutosaveName("SensveilManagementWindow")
-            window.isReleasedWhenClosed = false
             managementWindow = window
         }
         window.makeKeyAndOrderFront(nil)
@@ -136,31 +119,73 @@ public final class SensveilAppDelegate: NSObject, NSApplicationDelegate, NSMenuD
     @objc private func quitFromMenu() { controller.performMenuAction(.quit, openManagement: {}, quit: { NSApp.terminate(nil) }) }
 }
 
-/// A transparent titlebar forwards clicks into the full-size hosting view.
-/// Restore window-server dragging only in AppKit's reserved title area.
 @MainActor
-private final class ManagementWindow: NSWindow {
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown,
-           event.clickCount == 1,
-           !styleMask.contains(.fullScreen),
-           attachedSheet == nil,
-           isMovable,
-           let contentView {
-            let point = event.locationInWindow
-            let contentBounds = contentView.convert(contentView.bounds, to: nil)
-            // contentLayoutRect is supplied in window coordinates and updates
-            // with system titlebar, toolbar, resizing and fullscreen geometry.
-            let isTitleArea = contentBounds.contains(point) && point.y >= contentLayoutRect.maxY
-            let isWindowButton = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].contains { type in
-                guard let button = standardWindowButton(type) else { return false }
-                return button.convert(button.bounds, to: nil).contains(point)
+final class ManagementWindow: NSWindow {
+    static let contentSize = NSSize(width: 920, height: 700)
+    private let pauseButton = NSButton()
+    private var controller: SensveilController?
+    private var pauseSubscription: AnyCancellable?
+
+    convenience init(controller: SensveilController, permissions: PermissionCoordinator, navigation: ManagementNavigation) {
+        let root = ManagementView(controller: controller, permissions: permissions, navigation: navigation)
+            .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+        let hostingController = NSHostingController(rootView: root)
+        // Match SwiftUI's generated window constraints to AppKit's fixed size.
+        hostingController.sizingOptions = [.minSize, .maxSize]
+        self.init(contentViewController: hostingController)
+        self.controller = controller
+        title = "Sensveil"
+        styleMask = [.titled, .closable, .miniaturizable]
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+        titlebarSeparatorStyle = .none
+        collectionBehavior.insert(.fullScreenNone)
+        standardWindowButton(.zoomButton)?.isEnabled = false
+        isMovableByWindowBackground = false
+        isReleasedWhenClosed = false
+        contentMinSize = Self.contentSize
+        contentMaxSize = Self.contentSize
+        setContentSize(Self.contentSize)
+
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.layoutAttribute = .right
+        accessory.view = NSView(frame: NSRect(x: 0, y: 0, width: 176, height: 28))
+        pauseButton.bezelStyle = .rounded
+        pauseButton.controlSize = .small
+        pauseButton.imagePosition = .imageLeading
+        pauseButton.target = self
+        pauseButton.action = #selector(togglePause)
+        pauseButton.translatesAutoresizingMaskIntoConstraints = false
+        accessory.view.addSubview(pauseButton)
+        NSLayoutConstraint.activate([
+            pauseButton.widthAnchor.constraint(equalToConstant: 156),
+            pauseButton.trailingAnchor.constraint(equalTo: accessory.view.trailingAnchor, constant: -12),
+            pauseButton.centerYAnchor.constraint(equalTo: accessory.view.centerYAnchor)
+        ])
+        addTitlebarAccessoryViewController(accessory)
+
+        // Use incoming published values: @Published emits before its property changes.
+        pauseSubscription = controller.$configuration
+            .combineLatest(controller.$configurationLoadFailed, LanguagePreferences.shared.changes)
+            .sink { [weak self] configuration, readOnly, language in
+                self?.updatePauseAction(paused: configuration.isGloballyPaused, readOnly: readOnly, language: language)
             }
-            if isTitleArea && !isWindowButton {
-                performDrag(with: event)
-                return
-            }
-        }
-        super.sendEvent(event)
+    }
+
+    private func updatePauseAction(paused: Bool, readOnly: Bool, language: AppLanguage) {
+        let title = L10n.text(paused ? "恢复保护" : "暂停保护", language: language)
+        pauseButton.title = title
+        pauseButton.image = NSImage(systemSymbolName: paused ? "play.fill" : "pause.fill", accessibilityDescription: nil)
+        pauseButton.setAccessibilityLabel(title)
+        pauseButton.isEnabled = !readOnly
+        let help = readOnly
+            ? "无法读取本地配置，当前设置只读。请检查配置文件后重新启动 Sensveil。"
+            : (paused ? "恢复所有应用的保护" : "暂时停止所有应用的保护")
+        pauseButton.toolTip = L10n.text(help, language: language)
+    }
+
+    @objc private func togglePause() {
+        guard let controller else { return }
+        controller.setGlobalPause(!controller.configuration.isGloballyPaused)
     }
 }

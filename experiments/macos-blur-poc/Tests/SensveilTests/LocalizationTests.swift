@@ -8,14 +8,14 @@ final class LocalizationTests: XCTestCase {
     func testSystemLanguageUsesSimplifiedChineseForAllChineseVariants() {
         for identifier in ["zh", "zh-CN", "zh-Hans", "zh-Hant", "zh-TW", "zh-HK", "ZH-Hant-HK", "zh_TW"] {
             XCTAssertEqual(AppLanguage.system.resolvedLanguage(preferredLanguages: [identifier]), "zh-Hans", identifier)
-            XCTAssertEqual(L10n.text("保护效果", language: .system, preferredLanguages: [identifier]), "保护效果", identifier)
+            XCTAssertEqual(L10n.text("防窥设置", language: .system, preferredLanguages: [identifier]), "防窥设置", identifier)
         }
     }
 
     func testUnsupportedPrimarySystemLanguageFallsBackToEnglish() {
         for languages in [[], ["en-US"], ["fr-FR"], ["ja-JP", "zh-Hans"], ["zhuang"]] {
             XCTAssertEqual(AppLanguage.system.resolvedLanguage(preferredLanguages: languages), "en")
-            XCTAssertEqual(L10n.text("保护效果", language: .system, preferredLanguages: languages), "Protection Effects")
+            XCTAssertEqual(L10n.text("防窥设置", language: .system, preferredLanguages: languages), "Privacy Settings")
         }
         XCTAssertEqual(AppLanguage.chinese.resolvedLanguage(preferredLanguages: ["en"]), "zh-Hans")
         XCTAssertEqual(AppLanguage.english.resolvedLanguage(preferredLanguages: ["zh"]), "en")

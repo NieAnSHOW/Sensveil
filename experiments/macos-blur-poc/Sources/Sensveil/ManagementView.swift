@@ -2,14 +2,13 @@ import AppKit
 import SwiftUI
 
 enum ManagementPage: String, CaseIterable, Identifiable {
-    case applications, effects, schedule, permissions, general, about
+    case applications, settings, permissions, general, about
 
     var id: Self { self }
     @MainActor var title: String {
         switch self {
         case .applications: L10n.text("防窥应用")
-        case .effects: L10n.text("保护效果")
-        case .schedule: L10n.text("保护时段")
+        case .settings: L10n.text("防窥设置")
         case .permissions: L10n.text("权限")
         case .general: L10n.text("通用")
         case .about: L10n.text("关于")
@@ -18,8 +17,7 @@ enum ManagementPage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .applications: "app.badge.checkmark"
-        case .effects: "eye.slash"
-        case .schedule: "clock"
+        case .settings: "eye.slash"
         case .permissions: "lock.shield"
         case .general: "gearshape"
         case .about: "info.circle"
@@ -28,8 +26,7 @@ enum ManagementPage: String, CaseIterable, Identifiable {
     @MainActor var subtitle: String {
         switch self {
         case .applications: L10n.text("选择需要保护的应用，并查看当前保护状态。")
-        case .effects: L10n.text("调整窗口模糊强度与守护提示。")
-        case .schedule: L10n.text("按每周安排和节假日规则设置保护时间。")
+        case .settings: L10n.text("调整保护效果与保护时段。")
         case .permissions: L10n.text("管理窗口保护所需的系统授权。")
         case .general: L10n.text("管理 Sensveil 的应用偏好。")
         case .about: L10n.text("版本信息与项目链接。")
@@ -62,12 +59,13 @@ public struct ManagementView: View {
     }
 
     public var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
                 List(ManagementPage.allCases.filter { $0 != .about }, selection: $navigation.selection) { page in
                     Label(page.title, systemImage: page.symbol).tag(page)
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
                 Divider()
                 Button { navigation.selection = .about } label: {
                     Label(ManagementPage.about.title, systemImage: ManagementPage.about.symbol)
@@ -83,19 +81,16 @@ public struct ManagementView: View {
                 .accessibilityAddTraits(navigation.selection == .about ? [.isSelected] : [])
                 .padding(8)
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
-        } detail: {
+            .frame(width: 210)
+            .background(.regularMaterial)
+            Divider()
             let page = navigation.selection ?? .applications
             VStack(alignment: .leading, spacing: 0) {
                 pageHeader(page)
                 switch page {
                 case .applications: applicationsPage
-                case .effects:
-                    ProtectionSettingsView(controller: controller, session: settings, page: .effects)
-                        .id(ManagementPage.effects)
-                case .schedule:
-                    ProtectionSettingsView(controller: controller, session: settings, page: .schedule)
-                        .id(ManagementPage.schedule)
+                case .settings:
+                    ProtectionSettingsView(controller: controller, session: settings)
                 case .permissions: permissionsPage
                 case .general: generalPage
                 case .about: AboutView()
@@ -103,7 +98,6 @@ public struct ManagementView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         }
-        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 780, minHeight: 560)
         .environment(\.locale, languagePreferences.locale)
         .sheet(isPresented: $showApplicationPicker) {
@@ -113,19 +107,7 @@ public struct ManagementView: View {
 
     private func pageHeader(_ page: ManagementPage) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(page.title).font(.title2.bold())
-                Spacer()
-                Button {
-                    controller.setGlobalPause(!controller.configuration.isGloballyPaused)
-                } label: {
-                    Label(L10n.text(controller.configuration.isGloballyPaused ? "恢复保护" : "暂停保护"),
-                          systemImage: controller.configuration.isGloballyPaused ? "play.fill" : "pause.fill")
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                .disabled(controller.isConfigurationReadOnly)
-                .help(L10n.text(controller.configuration.isGloballyPaused ? "恢复所有应用的保护" : "暂时停止所有应用的保护"))
-            }
+            Text(page.title).font(.title2.bold())
             Text(page.subtitle).font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if page == .applications {

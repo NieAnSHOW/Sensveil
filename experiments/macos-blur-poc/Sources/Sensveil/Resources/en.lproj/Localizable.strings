@@ -171,6 +171,8 @@
 "部分窗口类型尚未验证" = "Some window types have not been verified";
 "重做" = "Redo";
 "防窥应用" = "Protected Apps";
+"防窥设置" = "Privacy Settings";
+"调整保护效果与保护时段。" = "Adjust protection effects and schedules.";
 "非保护时段" = "Outside Schedule";
 "项目与作者" = "Project and Author";
 "项目地址" = "Project";

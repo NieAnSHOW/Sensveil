@@ -45,21 +45,155 @@ final class MaterialAcceptanceTests: XCTestCase {
         XCTAssertTrue(panel.removed)
     }
 
-    func testUnsupportedDisplayAndScaleNeverIssueEvidence() {
+    func testSupportedScalesProtectWindowsOnEveryDisplayUsingPrimaryCoordinates() {
+        let primary = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let secondaryFrames = [primary.offsetBy(dx: 1000, dy: 41),
+            primary.offsetBy(dx: -1000, dy: 0), primary.offsetBy(dx: 0, dy: 800),
+            primary.offsetBy(dx: 0, dy: -800)]
+        for secondary in secondaryFrames {
+            let layout = ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary, secondary])
+            for screen in layout.screenFrames {
+                for scale in [CGFloat(1), CGFloat(2)] {
+                    let appKitTarget = CGRect(x: screen.minX + 100, y: screen.minY + 100, width: 300, height: 200)
+                    let target = CoordinateTransform.appKitRect(from: appKitTarget, primaryScreenFrame: primary)
+                    let window = WindowCandidate(key: WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10),
+                        bounds: target, isOnScreen: true, layer: 0)
+                    let panel = AcceptedTestPanel()
+                    panel.backingScale = scale
+                    let coordinator = MaterialOverlayCoordinator(makePanel: { _ in panel }, orderedWindowMetadata: {
+                        [.init(windowID: 11, bounds: target.insetBy(dx: -8, dy: -8)), .init(windowID: 10, bounds: target)]
+                    }, reduceTransparency: { false }, acceptedEnvironment: { self.accepted })
+                    let intents: [WindowKey: OverlayIntent] = [window.key: .attemptBlur]
+                    XCTAssertEqual(coordinator.reconcile(intents, windows: [window], screenLayout: layout)[window.key], .requestSubmitted)
+                    XCTAssertNil(panel.evidence)
+                    guard case .protected = coordinator.reconcile(intents, windows: [window], screenLayout: layout)[window.key] else {
+                        return XCTFail("A complete placement on either display must protect at 1x or 2x")
+                    }
+                    XCTAssertEqual(panel.presentationFrame, appKitTarget.insetBy(dx: -8, dy: -8))
+                    XCTAssertNotNil(panel.evidence)
+                    coordinator.removeAll()
+                }
+            }
+        }
+    }
+
+    func testUnsupportedScaleNeverIssuesEvidence() {
         let target = CGRect(x: 100, y: 100, width: 300, height: 200)
         let window = WindowCandidate(key: WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10), bounds: target, isOnScreen: true, layer: 0)
         let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
-        for (scale, screens) in [(CGFloat(1), [screen]), (CGFloat(2), [screen, screen.offsetBy(dx: 1000, dy: 0)])] {
+        for scale in [CGFloat(0), -1, 1.5, 3, .infinity, .nan] {
             let panel = AcceptedTestPanel()
             panel.backingScale = scale
             let coordinator = MaterialOverlayCoordinator(makePanel: { _ in panel }, orderedWindowMetadata: { [] },
                 reduceTransparency: { false }, acceptedEnvironment: { self.accepted })
             guard case .failed = coordinator.reconcile([window.key: .attemptBlur], windows: [window],
-                screenLayout: .init(primaryScreenFrame: screen, screenFrames: screens))[window.key] else {
+                screenLayout: .init(primaryScreenFrame: screen, screenFrames: [screen]))[window.key] else {
                 return XCTFail("Unaccepted display conditions must fail closed")
             }
             XCTAssertNil(panel.evidence)
             XCTAssertTrue(panel.removed)
+        }
+    }
+
+    func testCrossDisplayEdgeAndAmbiguousCoverageNeverIssueEvidence() {
+        let primary = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let secondary = primary.offsetBy(dx: 1000, dy: 0)
+        let key = WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10)
+        let placements = [(CGRect(x: 900, y: 100, width: 300, height: 200), [primary, secondary]),
+            (CGRect(x: 0, y: 100, width: 300, height: 200), [primary, secondary]),
+            (CGRect(x: 700, y: 100, width: 300, height: 200), [primary, secondary]),
+            (CGRect(x: 100, y: 100, width: 300, height: 200), [primary, primary])]
+        for (target, screens) in placements {
+            let panel = AcceptedTestPanel()
+            let window = WindowCandidate(key: key, bounds: target, isOnScreen: true, layer: 0)
+            let coordinator = MaterialOverlayCoordinator(makePanel: { _ in panel }, orderedWindowMetadata: { [] },
+                reduceTransparency: { false }, acceptedEnvironment: { self.accepted })
+            guard case .failed = coordinator.reconcile([key: .attemptBlur], windows: [window],
+                screenLayout: .init(primaryScreenFrame: primary, screenFrames: screens))[key] else {
+                return XCTFail("The complete expanded coverage must belong to exactly one display")
+            }
+            XCTAssertNil(panel.evidence)
+            XCTAssertTrue(coordinator.overlayKeys.isEmpty)
+        }
+    }
+
+    func testLayoutChangeRebuildsAndRequiresFreshNaturalSnapshot() throws {
+        let target = CGRect(x: 100, y: 100, width: 300, height: 200)
+        let key = WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10)
+        let window = WindowCandidate(key: key, bounds: target, isOnScreen: true, layer: 0)
+        let primary = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let oldLayout = ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary])
+        let newLayout = ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary, primary.offsetBy(dx: -1000, dy: 0)])
+        var panels: [AcceptedTestPanel] = []
+        let coordinator = MaterialOverlayCoordinator(makePanel: { _ in
+            let panel = AcceptedTestPanel()
+            panels.append(panel)
+            return panel
+        }, orderedWindowMetadata: {
+            [.init(windowID: 11, bounds: target.insetBy(dx: -8, dy: -8)), .init(windowID: 10, bounds: target)]
+        }, reduceTransparency: { false }, acceptedEnvironment: { self.accepted })
+        let intents: [WindowKey: OverlayIntent] = [key: .attemptBlur]
+        _ = coordinator.reconcile(intents, windows: [window], screenLayout: oldLayout)
+        guard case .protected = coordinator.reconcile(intents, windows: [window], screenLayout: oldLayout)[key] else {
+            return XCTFail("Expected accepted baseline")
+        }
+        let old = try XCTUnwrap(panels.first)
+        XCTAssertEqual(coordinator.reconcile(intents, windows: [window], screenLayout: newLayout)[key], .requestSubmitted)
+        XCTAssertTrue(old.removed)
+        XCTAssertNil(old.evidence)
+        XCTAssertEqual(panels.count, 2)
+        XCTAssertNil(panels.last?.evidence)
+        guard case .protected = coordinator.reconcile(intents, windows: [window], screenLayout: newLayout)[key] else {
+            return XCTFail("New layout requires a fresh matching natural snapshot")
+        }
+        coordinator.removeAll()
+    }
+
+    func testLayoutChangeBeforeExitRemovesImmediately() {
+        let target = CGRect(x: 100, y: 100, width: 300, height: 200)
+        let key = WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10)
+        let window = WindowCandidate(key: key, bounds: target, isOnScreen: true, layer: 0)
+        let primary = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let oldLayout = ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary])
+        let newLayout = ScreenLayout(primaryScreenFrame: primary.offsetBy(dx: 0, dy: 50),
+            screenFrames: [primary.offsetBy(dx: 0, dy: 50)])
+        let panel = AcceptedTestPanel()
+        let coordinator = MaterialOverlayCoordinator(makePanel: { _ in panel }, orderedWindowMetadata: {
+            [.init(windowID: 11, bounds: target.insetBy(dx: -8, dy: -8)), .init(windowID: 10, bounds: target)]
+        }, reduceTransparency: { false }, acceptedEnvironment: { self.accepted }, reduceMotion: { false })
+        _ = coordinator.reconcile([key: .attemptBlur], windows: [window], screenLayout: oldLayout)
+        _ = coordinator.reconcile([key: .attemptBlur], windows: [window], screenLayout: oldLayout)
+        _ = coordinator.reconcile([key: .remove], windows: [window], screenLayout: newLayout, foregroundPID: 42)
+        XCTAssertTrue(panel.removed)
+        XCTAssertNil(panel.fadeCompletion)
+        XCTAssertTrue(coordinator.retiringKeys.isEmpty)
+    }
+
+    func testMultiDisplayExitRetiresAndChangedLayoutOrScaleRemovesIt() {
+        let target = CGRect(x: 1100, y: 100, width: 300, height: 200)
+        let key = WindowKey(process: .init(pid: 42, generation: 1), cgWindowID: 10)
+        let window = WindowCandidate(key: key, bounds: target, isOnScreen: true, layer: 0)
+        let primary = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let layout = ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary, primary.offsetBy(dx: 1000, dy: 0)])
+        for changesScale in [false, true] {
+            let panel = AcceptedTestPanel()
+            panel.backingScale = 1
+            let coordinator = MaterialOverlayCoordinator(makePanel: { _ in panel }, orderedWindowMetadata: {
+                [.init(windowID: 11, bounds: target.insetBy(dx: -8, dy: -8)), .init(windowID: 10, bounds: target)]
+            }, reduceTransparency: { false }, acceptedEnvironment: { self.accepted }, reduceMotion: { false })
+            _ = coordinator.reconcile([key: .attemptBlur], windows: [window], screenLayout: layout)
+            guard case .protected = coordinator.reconcile([key: .attemptBlur], windows: [window], screenLayout: layout)[key] else {
+                return XCTFail("Expected accepted secondary display baseline")
+            }
+            _ = coordinator.reconcile([key: .remove], windows: [window], screenLayout: layout, foregroundPID: 42)
+            XCTAssertEqual(coordinator.retiringKeys, [key])
+            XCTAssertNotNil(panel.fadeCompletion)
+            XCTAssertFalse(panel.removed)
+            let changed = changesScale ? layout : ScreenLayout(primaryScreenFrame: primary, screenFrames: [primary])
+            if changesScale { panel.backingScale = 3 }
+            _ = coordinator.reconcile([key: .remove], windows: [window], screenLayout: changed, foregroundPID: 42)
+            XCTAssertTrue(panel.removed)
+            XCTAssertTrue(coordinator.retiringKeys.isEmpty)
         }
     }
 
