@@ -47,9 +47,44 @@ private struct DiagnosticView: View {
                     controller.requestScreenCapture()
                 }
             }
-            Text("Screen Recording: permission probe only; no pixel capture. Permission does not validate protection.")
+            Text("Screen Recording: authorized for this manual synthetic-window contour study. Permission does not validate protection.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Synthetic window contour (experimental)").font(.headline)
+                Picker("Fixture window", selection: Binding(
+                    get: { controller.contourWindowID },
+                    set: { controller.selectContourWindow($0) })) {
+                        Text("Select a fixture CG window").tag(UInt32?.none)
+                        ForEach(controller.contourWindows, id: \.key) { window in
+                            Text("CG \(window.key.cgWindowID) · \(Double(window.bounds.width).formatted(.number.precision(.fractionLength(0)))) x \(Double(window.bounds.height).formatted(.number.precision(.fractionLength(0)))) points")
+                                .tag(Optional(window.key.cgWindowID))
+                        }
+                }
+                HStack {
+                    Button {
+                        controller.captureContourOnce()
+                    } label: {
+                        Label(controller.isContourCaptureRunning ? "Capture pending" : "Capture once", systemImage: "camera")
+                    }
+                    .disabled(!controller.canCaptureContour)
+                    Button { controller.stopContourStudy() } label: {
+                        Label("Stop study", systemImage: "stop.fill")
+                    }
+                }
+                Text(controller.contourMessage)
+                    .font(.system(.caption, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if let silhouette = controller.contourSilhouette {
+                    Image(decorative: silhouette, scale: 1)
+                        .resizable()
+                        .interpolation(.none)
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 240)
+                        .accessibilityLabel("Neutral experimental outer silhouette; unvalidated")
+                }
+            }
             HStack {
                 Spacer()
                 Toggle("Experiment", isOn: Binding(
@@ -65,6 +100,13 @@ private struct DiagnosticView: View {
                 .textSelection(.enabled)
             Text(controller.measurementMessage).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ordering metadata (unverified)").font(.headline)
+                Text(controller.orderingDiagnosticMessage)
+                    .font(.system(.caption, design: .monospaced))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Material candidate").font(.headline)
                 Picker("Material candidate", selection: Binding(
@@ -100,7 +142,8 @@ private struct DiagnosticView: View {
         GridRow {
             Text(title)
             Text(permissionLabel(state)).foregroundStyle(state == .granted ? Color.green : Color.secondary)
-            Button("Request", action: request).disabled(state == .granted)
+            Button(title == "Screen Recording" ? "Request Recording" : "Request", action: request)
+                .disabled(state == .granted)
             Button { controller.refreshPermissions() } label: {
                 Image(systemName: "arrow.clockwise")
             }

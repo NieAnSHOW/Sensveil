@@ -32,10 +32,10 @@ public final class ApplicationCatalog {
     public private(set) var lastError: ApplicationCatalogError?
 
     private let workspace: NSWorkspace
-    private let fileManager: FileManager
     private let ownBundleIdentifier: String?
     private let applicationDirectories: [URL]
     private let includesRunningApplications: Bool
+    private var iconCache: [URL: Data] = [:]
 
     public init(
         workspace: NSWorkspace = .shared,
@@ -45,26 +45,48 @@ public final class ApplicationCatalog {
         includesRunningApplications: Bool = true
     ) {
         self.workspace = workspace
-        self.fileManager = fileManager
         self.ownBundleIdentifier = ownBundleIdentifier
         self.applicationDirectories = applicationDirectories ?? Self.defaultApplicationDirectories(fileManager: fileManager)
         self.includesRunningApplications = includesRunningApplications
     }
 
-    public func list(search: String = "") -> [ApplicationDescriptor] {
+    public func list(search: String = "") async -> [ApplicationDescriptor] {
+        let runningURLs = (includesRunningApplications ? workspace.runningApplications : []).compactMap { application -> URL? in
+            guard application.activationPolicy == .regular else { return nil }
+            return application.bundleURL
+        }
+        let directories = applicationDirectories
+        let ownIdentifier = ownBundleIdentifier
+        // Directory traversal and plist decoding do not need AppKit or the UI actor.
+        let descriptors = await Task.detached(priority: .userInitiated) {
+            Self.discover(directories: directories, runningURLs: runningURLs, ownBundleIdentifier: ownIdentifier, search: search)
+        }.value
+        var result: [ApplicationDescriptor] = []
+        for (index, descriptor) in descriptors.enumerated() {
+            guard !Task.isCancelled else { return [] }
+            result.append(withIcon(descriptor))
+            // AppKit image drawing stays on the main actor, with bounded work
+            // between yields so a large catalog cannot monopolize interaction.
+            if index % 8 == 7 { await Task.yield() }
+        }
+        return result
+    }
+
+    nonisolated private static func discover(
+        directories: [URL], runningURLs: [URL], ownBundleIdentifier: String?, search: String
+    ) -> [ApplicationDescriptor] {
+        let fileManager = FileManager()
         var byBundleID: [String: ApplicationDescriptor] = [:]
-        let running = (includesRunningApplications ? workspace.runningApplications : []).compactMap { application -> ApplicationDescriptor? in
-            guard let url = application.bundleURL else { return nil }
+        let running = runningURLs.compactMap { url -> ApplicationDescriptor? in
             return Self.descriptor(
                 at: url,
                 isRunning: true,
-                activationPolicy: application.activationPolicy,
                 ownBundleIdentifier: ownBundleIdentifier
             )
         }
         for descriptor in running { byBundleID[descriptor.bundleIdentifier] = descriptor }
 
-        for root in applicationDirectories {
+        for root in directories {
             guard let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
@@ -85,7 +107,6 @@ public final class ApplicationCatalog {
                 let comparison = $0.displayName.localizedStandardCompare($1.displayName)
                 return comparison == .orderedSame ? $0.bundleIdentifier < $1.bundleIdentifier : comparison == .orderedAscending
             }
-            .map(withIcon)
     }
 
     public func descriptor(for url: URL) -> ApplicationDescriptor? {
@@ -93,11 +114,31 @@ public final class ApplicationCatalog {
     }
 
     private func withIcon(_ descriptor: ApplicationDescriptor) -> ApplicationDescriptor {
-        // Only the UI-facing catalog touches AppKit image data; plist parsing stays pure.
-        let icon = workspace.icon(forFile: descriptor.url.path)
-        icon.size = NSSize(width: 32, height: 32)
-        let data = icon.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }
+        let data: Data?
+        if let cached = iconCache[descriptor.url] {
+            data = cached
+        } else {
+            data = thumbnailData(for: workspace.icon(forFile: descriptor.url.path))
+            if let data { iconCache[descriptor.url] = data }
+        }
         return ApplicationDescriptor(bundleIdentifier: descriptor.bundleIdentifier, displayName: descriptor.displayName, url: descriptor.url, iconData: data, isRunning: descriptor.isRunning)
+    }
+
+    private func thumbnailData(for image: NSImage) -> Data? {
+        // NSImage.size only changes logical points. Draw into a new bitmap to
+        // discard large source representations before encoding or persistence.
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        image.draw(in: NSRect(x: 0, y: 0, width: 64, height: 64), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap.size = NSSize(width: 32, height: 32)
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     public func chooseApplication() async -> ApplicationDescriptor? {

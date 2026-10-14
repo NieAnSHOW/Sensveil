@@ -7,6 +7,10 @@ final class FixtureAppDelegate: NSObject, NSApplicationDelegate {
     private var sheets: [Int: NSWindow] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--validate-contours") {
+            Task { await FixtureContourValidation.run() }
+            return
+        }
         createMenu()
         reopenWindows()
         NSApp.activate(ignoringOtherApps: true)
@@ -106,6 +110,8 @@ final class FixtureAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct FixtureView: View {
+    @State private var inputSample = ""
+
     let title: String
     let move: () -> Void
     let resize: () -> Void
@@ -128,6 +134,12 @@ private struct FixtureView: View {
             Text("12 pt: Fictional balance, no real account").font(.system(size: 12))
             Text("24 pt: SAMPLE ACCOUNT").font(.system(size: 24))
             Text("48 pt: $12,345").font(.system(size: 48)).lineLimit(1)
+            HStack(spacing: 12) {
+                Text("输入测试（仅合成内容）")
+                TextField("SAMPLE", text: $inputSample)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("\(title) 输入测试（仅合成内容）")
+            }
             Divider()
             HStack(spacing: 12) {
                 Button(action: move) { Label("Move", systemImage: "arrow.up.right") }

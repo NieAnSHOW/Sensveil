@@ -7,6 +7,238 @@ import XCTest
 final class WindowProtectionCoordinatorTests: XCTestCase {
     private let bundleID = "com.example.editor"
 
+    func testSynchronousStartupReconcilesOnlyOnce() {
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(runtime.reconciles.count, 1)
+        XCTAssertEqual(runtime.reconciles.first?.0.values.contains(.attemptBlur), true)
+    }
+
+    func testRuntimeWithoutStartupCallbackStillReconcilesInitialState() {
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        runtime.emitsStartup = false
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(runtime.reconciles.count, 1)
+        XCTAssertEqual(runtime.reconciles.first?.0.values.contains(.attemptBlur), true)
+    }
+
+    func testStartupForwardsConfiguredOverlaySettingsBeforeReconciliation() {
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+
+        coordinator.start(configuration: ProtectionConfiguration(
+            applications: [application()], blurLevel: .strongest, showsProtectionLabel: false))
+
+        XCTAssertEqual(runtime.settingsHistory.count, 1)
+        XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, .strongest)
+        XCTAssertEqual(runtime.settingsHistory.last?.showsProtectionLabel, false)
+        XCTAssertEqual(runtime.settingsAtReconcile.last?.blurLevel, .strongest)
+    }
+
+    func testEffectChangesPreserveOverlayKeysAndUnverifiedStatus() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.observationResult = { intents, _ in
+            Dictionary(uniqueKeysWithValues: intents.compactMap { key, intent in
+                intent == .attemptBlur ? (key, .requestSubmitted) : nil
+            })
+        }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        var configuration = ProtectionConfiguration(applications: [application()])
+        coordinator.start(configuration: configuration)
+        let key = candidate(instance, id: 1).key
+        let initialRemovals = runtime.removeAllCount
+        let initialStatus = coordinator.status(for: bundleID)
+
+        for level in BlurLevel.allCases {
+            configuration.blurLevel = level
+            configuration.showsProtectionLabel.toggle()
+            coordinator.setConfiguration(configuration)
+
+            XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, level)
+            XCTAssertEqual(runtime.settingsHistory.last?.showsProtectionLabel, configuration.showsProtectionLabel)
+            XCTAssertEqual(runtime.removeAllCount, initialRemovals)
+            XCTAssertEqual(runtime.overlayKeys, [key])
+            XCTAssertEqual(runtime.reconciles.last?.0[key], .attemptBlur)
+            XCTAssertEqual(coordinator.status(for: bundleID), initialStatus)
+        }
+        guard case .cannotProtect = initialStatus else {
+            return XCTFail("settings must never promote a submitted material request to verified protection")
+        }
+    }
+
+    func testHiddenTransitionChoicesUseFixedDurationWithoutRemovingActivePanels() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        for storedChoice in ProtectionTransition.allCases {
+            let runtime = configuredRuntime(instance: instance)
+            runtime.observationResult = { intents, _ in
+                Dictionary(uniqueKeysWithValues: intents.compactMap { key, intent in
+                    intent == .attemptBlur ? (key, .requestSubmitted) : nil
+                })
+            }
+            let coordinator = WindowProtectionCoordinator(runtime: runtime)
+            defer { coordinator.stop() }
+            var configuration = ProtectionConfiguration(
+                applications: [application()], blurLevel: .enhanced,
+                showsProtectionLabel: false, protectionTransition: storedChoice)
+            coordinator.start(configuration: configuration)
+            XCTAssertEqual(runtime.settingsHistory.last?.protectionTransition, .ms200)
+            let removals = runtime.removeAllCount
+            let key = candidate(instance, id: 1).key
+            for choice in ProtectionTransition.allCases {
+                configuration.protectionTransition = choice
+                coordinator.setConfiguration(configuration)
+                XCTAssertEqual(runtime.settingsHistory.last?.protectionTransition, .ms200)
+                XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, .enhanced)
+                XCTAssertEqual(runtime.settingsHistory.last?.showsProtectionLabel, false)
+                XCTAssertEqual(runtime.removeAllCount, removals)
+                XCTAssertEqual(runtime.overlayKeys, [key])
+                XCTAssertEqual(runtime.reconciles.last?.0[key], .attemptBlur)
+            }
+        }
+    }
+
+    func testEffectChangesKeepForegroundWindowClear() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.frontmost = instance
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        coordinator.setConfiguration(ProtectionConfiguration(
+            applications: [application()], blurLevel: .enhanced, showsProtectionLabel: false))
+
+        XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, .enhanced)
+        XCTAssertEqual(runtime.reconciles.last?.0[candidate(instance, id: 1).key], .remove)
+        XCTAssertEqual(coordinator.status(for: bundleID), .foreground)
+    }
+
+    func testEffectChangesPreserveInactiveSchedule() throws {
+        let instant = try date("2026-10-12T20:00:00Z")
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { instant }, calendar: { Self.gregorianGMT() })
+        defer { coordinator.stop() }
+        var configuration = ProtectionConfiguration(applications: [application()], schedule: Self.specifiedSchedule())
+        coordinator.start(configuration: configuration)
+
+        configuration.blurLevel = .strongest
+        configuration.showsProtectionLabel = false
+        coordinator.setConfiguration(configuration)
+
+        XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, .strongest)
+        XCTAssertEqual(coordinator.status(for: bundleID), .outsideSchedule)
+        XCTAssertTrue(runtime.reconciles.isEmpty)
+    }
+
+    func testProductionRuntimeForwardsSettingsWithoutRemovingOverlays() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let fixture = try RuntimeFixture(bundleID: bundleID, instance: instance, snapshot: snapshot(instance, windows: [candidate(instance, id: 1)]))
+        defer { fixture.remove() }
+        let coordinator = WindowProtectionCoordinator(runtime: fixture.runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        let initialRemovals = fixture.overlays.removeAllCount
+
+        coordinator.setConfiguration(ProtectionConfiguration(
+            applications: [application()], blurLevel: .enhanced, showsProtectionLabel: false))
+
+        XCTAssertEqual(fixture.overlays.settingsHistory.last?.blurLevel, .enhanced)
+        XCTAssertEqual(fixture.overlays.settingsHistory.last?.showsProtectionLabel, false)
+        XCTAssertEqual(fixture.overlays.removeAllCount, initialRemovals)
+        XCTAssertEqual(fixture.overlays.overlayKeys, [candidate(instance, id: 1).key])
+    }
+
+    func testControllerSaveFailureDoesNotForwardEffectSettings() throws {
+        let runtime = FakeProtectionRuntime()
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = SensveilController(
+            configurationStore: ConfigurationStore(fileURL: directory.appendingPathComponent("configuration.json")),
+            catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false),
+            protectionCoordinator: coordinator)
+        defer { controller.stopProtection() }
+        try controller.saveProtectionSettings(blurLevel: .enhanced, showsProtectionLabel: false,
+            schedule: .defaultConfiguration, protectionTransition: .ms500)
+        let initialSettingsCount = runtime.settingsHistory.count
+        XCTAssertEqual(runtime.settingsHistory.last?.blurLevel, .enhanced)
+        XCTAssertEqual(runtime.settingsHistory.last?.protectionTransition, .ms200)
+        XCTAssertEqual(try ConfigurationStore(fileURL: directory.appendingPathComponent("configuration.json"))
+            .load().protectionTransition, .ms500)
+
+        try FileManager.default.removeItem(at: directory)
+        try Data("blocks configuration directory".utf8).write(to: directory)
+
+        XCTAssertThrowsError(try controller.saveProtectionSettings(
+            blurLevel: .strongest, showsProtectionLabel: true, schedule: .defaultConfiguration, protectionTransition: .off))
+        XCTAssertEqual(runtime.settingsHistory.count, initialSettingsCount)
+        XCTAssertEqual(controller.configuration.blurLevel, .enhanced)
+        XCTAssertFalse(controller.configuration.showsProtectionLabel)
+        XCTAssertEqual(controller.configuration.protectionTransition, .ms500)
+    }
+
+    func testUnchangedWindowEventsDoNotPublishStatusUpdates() throws {
+        let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
+        let instant = try date("2026-10-12T10:00:00Z")
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { instant }, calendar: { Self.gregorianGMT() })
+        defer { coordinator.stop() }
+        var updates = 0
+        coordinator.onStatusChange = { updates += 1 }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        let initialUpdates = updates
+
+        runtime.emit(.windows)
+        runtime.emit(.permissions)
+
+        XCTAssertEqual(updates, initialUpdates)
+        // Suppressing presentation updates must not skip protection checks.
+        XCTAssertEqual(runtime.reconciles.count, 3)
+    }
+
+    func testChangedProtectionStatusStillPublishesUpdate() throws {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        let instant = try date("2026-10-12T10:00:00Z")
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { instant }, calendar: { Self.gregorianGMT() })
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        var updates = 0
+        coordinator.onStatusChange = { updates += 1 }
+
+        runtime.frontmost = instance
+        runtime.emit(.activation)
+
+        XCTAssertEqual(updates, 1)
+        XCTAssertEqual(coordinator.status(for: bundleID), .foreground)
+    }
+
+    func testChangedSchedulePublishesEvenWithoutApplications() throws {
+        let runtime = FakeProtectionRuntime()
+        var current = try date("2026-10-12T10:00:00Z")
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { current }, calendar: { Self.gregorianGMT() })
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(schedule: Self.specifiedSchedule()))
+        var updates = 0
+        coordinator.onStatusChange = { updates += 1 }
+
+        current = try date("2026-10-12T18:00:00Z")
+        coordinator.processScheduleTimerFired()
+
+        XCTAssertEqual(updates, 1)
+        XCTAssertEqual(coordinator.scheduleEvaluation?.isActive, false)
+    }
+
     func testForegroundClearsEveryWindowForApplication() {
         let instance = ProcessInstance(pid: 100, generation: 1)
         let windows = [candidate(instance, id: 1), candidate(instance, id: 2)]
@@ -44,6 +276,202 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
             return XCTFail("submitted material must remain unverified")
         }
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("unverified"))
+    }
+
+    func testEveryCurrentWindowNeedsMatchedEvidenceBeforeReportingProtected() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let windows = [candidate(instance, id: 1), candidate(instance, id: 2)]
+        let runtime = configuredRuntime(instance: instance)
+        runtime.snapshots[instance] = snapshot(instance, windows: windows)
+        runtime.observationResult = { _, _ in
+            Dictionary(uniqueKeysWithValues: windows.map { ($0.key, self.acceptedObservation(for: $0)) })
+        }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+    }
+
+    func testMatchedProtectionWithFailedOrUnverifiedWindowReportsPartialFailure() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let windows = [candidate(instance, id: 1), candidate(instance, id: 2)]
+        for other in [OverlayObservation.failed(reason: "Relative overlay order was lost"), .requestSubmitted] {
+            let runtime = configuredRuntime(instance: instance)
+            runtime.snapshots[instance] = snapshot(instance, windows: windows)
+            runtime.observationResult = { _, _ in
+                [windows[0].key: self.acceptedObservation(for: windows[0]), windows[1].key: other]
+            }
+            let coordinator = WindowProtectionCoordinator(runtime: runtime)
+            defer { coordinator.stop() }
+            coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+            guard case .partialFailure(let reasons) = coordinator.status(for: bundleID) else {
+                return XCTFail("a verified window and an unsuccessful window must be partial failure")
+            }
+            XCTAssertFalse(reasons.isEmpty)
+        }
+    }
+
+    func testStaleProtectionEvidenceFailsClosed() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let evidence = [
+            OverlayProtectionEvidence(key: candidate(instance, id: 2).key, bounds: window.bounds, blurLevel: .standard, validationRevision: OverlayProtectionEvidence.acceptedRevision),
+            OverlayProtectionEvidence(key: window.key, bounds: window.bounds.offsetBy(dx: 1, dy: 0), blurLevel: .standard, validationRevision: OverlayProtectionEvidence.acceptedRevision),
+            OverlayProtectionEvidence(key: window.key, bounds: window.bounds, blurLevel: .enhanced, validationRevision: OverlayProtectionEvidence.acceptedRevision),
+            OverlayProtectionEvidence(key: window.key, bounds: window.bounds, blurLevel: .standard, validationRevision: "previous-material-revision")
+        ]
+        for value in evidence {
+            let runtime = configuredRuntime(instance: instance)
+            runtime.observationResult = { _, _ in [window.key: .protected(value)] }
+            let coordinator = WindowProtectionCoordinator(runtime: runtime)
+            defer { coordinator.stop() }
+
+            coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+            guard case .cannotProtect = coordinator.status(for: bundleID) else {
+                return XCTFail("stale or mismatched evidence must never report protected")
+            }
+        }
+    }
+
+    func testMissingObservationProducesPartialFailureOnlyWithVerifiedWindow() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let windows = [candidate(instance, id: 1), candidate(instance, id: 2)]
+        let runtime = configuredRuntime(instance: instance)
+        runtime.snapshots[instance] = snapshot(instance, windows: windows)
+        runtime.observationResult = { _, _ in [windows[0].key: self.acceptedObservation(for: windows[0])] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        guard case .partialFailure = coordinator.status(for: bundleID) else {
+            return XCTFail("a missing observation cannot certify all windows")
+        }
+        runtime.observationResult = { _, _ in [:] }
+        runtime.emit(.windows)
+        guard case .cannotProtect = coordinator.status(for: bundleID) else {
+            return XCTFail("no verified windows must report cannotProtect")
+        }
+    }
+
+    func testMissingProcessSnapshotCannotBeHiddenByVerifiedProcess() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let missing = ProcessInstance(pid: 101, generation: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.instances[bundleID] = [instance, missing]
+        let window = candidate(instance, id: 1)
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        guard case .partialFailure = coordinator.status(for: bundleID) else {
+            return XCTFail("every running process needs a current snapshot")
+        }
+    }
+
+    func testSnapshotIssuePreventsProtectedStatusDespiteMatchedWindowEvidence() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.snapshots[instance] = snapshot(instance, windows: [window], issues: [WindowIssue(kind: .unsupported, reason: "private details")])
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        XCTAssertEqual(coordinator.status(for: bundleID), .partialFailure(["unsupported window"]))
+    }
+
+    func testMatchedEvidenceCannotOverridePermissionFailure() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.permissions = [.notGranted]
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        guard case .cannotProtect(let reason) = coordinator.status(for: bundleID) else {
+            return XCTFail("permission failure must override a runtime's stale success")
+        }
+        XCTAssertTrue(reason.localizedCaseInsensitiveContains("permission"))
+    }
+
+    func testDuplicateWindowIdentityCannotReportProtected() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.snapshots[instance] = snapshot(instance, windows: [window, window])
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+
+        guard case .cannotProtect = coordinator.status(for: bundleID) else {
+            return XCTFail("ambiguous identity cannot validate current geometry")
+        }
+    }
+
+    func testProtectedFocusCycleClearsAndRevalidatesWithoutCachedSuccess() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.observationResult = { intents, _ in
+            intents[window.key] == .attemptBlur ? [window.key: self.acceptedObservation(for: window)] : [:]
+        }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+
+        runtime.frontmost = instance
+        runtime.snapshots[instance] = snapshot(instance, windows: [])
+        runtime.emit(.activation)
+        XCTAssertEqual(runtime.reconciles.last?.0[window.key], .remove)
+        XCTAssertEqual(coordinator.status(for: bundleID), .foreground)
+
+        runtime.frontmost = ProcessInstance(pid: 200, generation: 2)
+        runtime.snapshots[instance] = snapshot(instance, windows: [window])
+        runtime.observationResult = { _, _ in [window.key: .requestSubmitted] }
+        runtime.emit(.activation)
+        guard case .cannotProtect = coordinator.status(for: bundleID) else {
+            return XCTFail("returning to background requires fresh evidence")
+        }
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        runtime.emit(.windows)
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+    }
+
+    func testGuardLabelToggleKeepsValidatedStatusAndBlurChangeNeedsMatchingEvidence() {
+        let instance = ProcessInstance(pid: 100, generation: 1)
+        let window = candidate(instance, id: 1)
+        let runtime = configuredRuntime(instance: instance)
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window)] }
+        let coordinator = WindowProtectionCoordinator(runtime: runtime)
+        defer { coordinator.stop() }
+        var configuration = ProtectionConfiguration(applications: [application()])
+        coordinator.start(configuration: configuration)
+        let initialRemovals = runtime.removeAllCount
+
+        configuration.showsProtectionLabel = false
+        coordinator.setConfiguration(configuration)
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+        XCTAssertEqual(runtime.removeAllCount, initialRemovals)
+
+        configuration.blurLevel = .strongest
+        coordinator.setConfiguration(configuration)
+        guard case .cannotProtect = coordinator.status(for: bundleID) else {
+            return XCTFail("evidence for the old blur level must be rejected")
+        }
+        runtime.observationResult = { _, _ in [window.key: self.acceptedObservation(for: window, blurLevel: .strongest)] }
+        runtime.emit(.windows)
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+        XCTAssertEqual(runtime.removeAllCount, initialRemovals)
     }
 
     func testStartupWithKnownForegroundPIDWithoutProcessInstanceRequestsBlur() {
@@ -120,7 +548,7 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("permission"))
     }
 
-    func testUnsupportedWindowProducesPartialFailureWhenAnotherWindowSubmits() {
+    func testUnsupportedWindowCannotProtectWhenAnotherWindowOnlySubmits() {
         let instance = ProcessInstance(pid: 100, generation: 1)
         let supported = candidate(instance, id: 1)
         let runtime = configuredRuntime(instance: instance)
@@ -134,11 +562,11 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
 
         coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
 
-        guard case .partialFailure(let summaries) = coordinator.status(for: bundleID) else {
-            return XCTFail("mixed supported and unsupported windows must be partial failure")
+        guard case .cannotProtect(let reason) = coordinator.status(for: bundleID) else {
+            return XCTFail("submitted requests cannot count as verified partial protection")
         }
-        XCTAssertTrue(summaries.contains { $0.localizedCaseInsensitiveContains("ambiguous") })
-        XCTAssertTrue(summaries.allSatisfy { !$0.contains("duplicate geometry") })
+        XCTAssertTrue(reason.localizedCaseInsensitiveContains("ambiguous"))
+        XCTAssertFalse(reason.contains("duplicate geometry"))
     }
 
     func testIndependentOverlayFailureProducesPartialFailure() {
@@ -146,7 +574,7 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         let windows = [candidate(instance, id: 1), candidate(instance, id: 2)]
         let runtime = configuredRuntime(instance: instance)
         runtime.snapshots[instance] = snapshot(instance, windows: windows)
-        runtime.observationResult = { _, _ in [windows[0].key: .requestSubmitted, windows[1].key: .failed(reason: "Relative overlay order was lost")] }
+        runtime.observationResult = { _, _ in [windows[0].key: self.acceptedObservation(for: windows[0]), windows[1].key: .failed(reason: "Relative overlay order was lost")] }
         let coordinator = WindowProtectionCoordinator(runtime: runtime)
 
         coordinator.start(configuration: ProtectionConfiguration(applications: [application()]))
@@ -487,8 +915,9 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
     }
 
     func testCalendarMissingYearWarnsIndependentlyOfStatus() throws {
+        let instant = try date("2026-10-12T10:00:00Z")
         let runtime = configuredRuntime(instance: ProcessInstance(pid: 100, generation: 1))
-        let coordinator = WindowProtectionCoordinator(runtime: runtime, calendar: { Self.gregorianGMT() }, holidays: .empty)
+        let coordinator = WindowProtectionCoordinator(runtime: runtime, now: { instant }, calendar: { Self.gregorianGMT() }, holidays: .empty)
         defer { coordinator.stop() }
         var schedule = Self.specifiedSchedule()
         schedule.followsMainlandHolidays = true
@@ -543,6 +972,11 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
 
     private func application() -> ProtectedApplication {
         ProtectedApplication(bundleIdentifier: bundleID, displayName: "Editor")
+    }
+
+    private func acceptedObservation(for window: WindowCandidate, blurLevel: BlurLevel = .standard) -> OverlayObservation {
+        .protected(OverlayProtectionEvidence(key: window.key, bounds: window.bounds, blurLevel: blurLevel,
+                                             validationRevision: OverlayProtectionEvidence.acceptedRevision))
     }
 
     private func candidate(_ instance: ProcessInstance, id: UInt32) -> WindowCandidate {
@@ -608,20 +1042,27 @@ private final class FakeFocusMonitor: FocusMonitoring {
 
 @MainActor
 private final class FakeOverlayCoordinator: OverlayCoordinating {
+    var settingsHistory: [OverlaySettings] = []
+    var removeAllCount = 0
+    func setSettings(_ settings: OverlaySettings) {
+        settingsHistory.append(settings)
+    }
     var overlayKeys = Set<WindowKey>()
     var calls: [([WindowKey: OverlayIntent], [WindowCandidate])] = []
-    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate], screenLayout: ScreenLayout) -> [WindowKey: OverlayObservation] {
+    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate], screenLayout: ScreenLayout, foregroundPID: Int32?) -> [WindowKey: OverlayObservation] {
         calls.append((intents, windows))
         overlayKeys = Set(intents.compactMap { $0.value == .attemptBlur ? $0.key : nil })
         return Dictionary(uniqueKeysWithValues: intents.compactMap { key, intent in
             switch intent { case .attemptBlur: return (key, .requestSubmitted); case .cannotProtect(let reason): return (key, .failed(reason: reason)); case .remove: return nil }
         })
     }
-    func removeAll() { overlayKeys.removeAll() }
+    func removeAll() { removeAllCount += 1; overlayKeys.removeAll() }
 }
 
 @MainActor
 private final class FakeProtectionRuntime: WindowProtectionCoordinator.Runtime {
+    var settingsHistory: [OverlaySettings] = []
+    var settingsAtReconcile: [OverlaySettings] = []
     var callback: ((FocusEvent) -> Void)?
     var frontmost: ProcessInstance?
     var rawFrontmostPID: Int32?
@@ -632,14 +1073,22 @@ private final class FakeProtectionRuntime: WindowProtectionCoordinator.Runtime {
     var reconciles: [([WindowKey: OverlayIntent], [WindowCandidate])] = []
     var removeAllCount = 0
     var overlayKeys = Set<WindowKey>()
+    var emitsStartup = true
 
-    func start(onEvent: @escaping (FocusEvent) -> Void) { callback = onEvent; onEvent(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: .startup, terminatedPID: nil)) }
+    func start(onEvent: @escaping (FocusEvent) -> Void) {
+        callback = onEvent
+        if emitsStartup { onEvent(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: .startup, terminatedPID: nil)) }
+    }
     func stop() { callback = nil }
     func currentFrontmostPID() -> Int32? { rawFrontmostPID ?? frontmost?.pid }
     func runningInstances(for bundleIdentifier: String) -> [ProcessInstance] { instances[bundleIdentifier] ?? [] }
     func snapshot(for instance: ProcessInstance) -> WindowSnapshot? { snapshots[instance] }
     func permissionStates() -> [PermissionState] { permissions }
-    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate]) -> [WindowKey: OverlayObservation] {
+    func setSettings(_ settings: OverlaySettings) {
+        settingsHistory.append(settings)
+    }
+    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate], animateForegroundRemoval: Bool) -> [WindowKey: OverlayObservation] {
+        if let settings = settingsHistory.last { settingsAtReconcile.append(settings) }
         reconciles.append((intents, windows))
         let result = observationResult?(intents, windows) ?? [:]
         overlayKeys = Set(result.compactMap { key, observation in

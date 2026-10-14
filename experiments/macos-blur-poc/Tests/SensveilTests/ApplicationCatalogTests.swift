@@ -4,6 +4,38 @@ import XCTest
 
 final class ApplicationCatalogTests: XCTestCase {
     @MainActor
+    func testCatalogIconIsRasterizedToThumbnailPixels() throws {
+        let app = try makeApp(id: "com.example.thumbnail", name: "Thumbnail")
+        let catalog = ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false)
+        let descriptor = try XCTUnwrap(catalog.descriptor(for: app))
+        let data = try XCTUnwrap(descriptor.iconData)
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
+        // Changing the logical NSImage size must not leave a full-resolution
+        // bitmap in every row or in persisted protection configuration.
+        XCTAssertLessThanOrEqual(bitmap.pixelsWide, 64)
+        XCTAssertLessThanOrEqual(bitmap.pixelsHigh, 64)
+        XCTAssertLessThan(data.count, 64 * 64 * 4)
+    }
+
+    @MainActor
+    func testControllerDefersApplicationDiscoveryUntilAfterInitialization() async throws {
+        let app = try makeApp(id: "com.example.deferred", name: "Deferred")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let catalog = ApplicationCatalog(applicationDirectories: [app.deletingLastPathComponent()], includesRunningApplications: false)
+        let controller = SensveilController(configurationStore: ConfigurationStore(appSupportDirectory: directory), catalog: catalog)
+        defer { controller.stopProtection() }
+        XCTAssertTrue(controller.availableApplications.isEmpty, "Construction must return before scanning installed applications and decoding their icons")
+        controller.refreshApplications()
+        XCTAssertTrue(controller.availableApplications.isEmpty, "Refresh must schedule discovery without blocking the caller")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while controller.availableApplications.isEmpty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(controller.availableApplications.map(\.bundleIdentifier), ["com.example.deferred"])
+    }
+
+    @MainActor
     func testControllerCannotOverwriteConfigurationAfterLoadFailure() throws {
         for contents in [#"{"schemaVersion":999,"applications":[],"isGloballyPaused":false}"#, "not-json"] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -39,15 +71,16 @@ final class ApplicationCatalogTests: XCTestCase {
     }
 
     @MainActor
-    func testCatalogSearchDeduplicatesAndSortsInstalledApplications() throws {
+    func testCatalogSearchDeduplicatesAndSortsInstalledApplications() async throws {
         let first = try makeApp(id: "com.example.writer", name: "Writer")
         let second = try makeApp(id: "com.example.writer", name: "Writer Copy")
         let third = try makeApp(id: "com.example.reader", name: "Reader")
         let catalog = ApplicationCatalog(applicationDirectories: [first.deletingLastPathComponent(), second.deletingLastPathComponent(), third.deletingLastPathComponent()], includesRunningApplications: false)
-        let matches = catalog.list(search: "com.example.")
+        let matches = await catalog.list(search: "com.example.")
         XCTAssertEqual(matches.count, 2)
         XCTAssertEqual(matches.map(\.displayName), ["Reader", "Writer Copy"])
-        XCTAssertEqual(catalog.list(search: "rEaDeR").map(\.bundleIdentifier), ["com.example.reader"])
+        let readerMatches = await catalog.list(search: "rEaDeR")
+        XCTAssertEqual(readerMatches.map(\.bundleIdentifier), ["com.example.reader"])
     }
 
     func testDescriptorReadsTemporaryInfoPlistAndFiltersSearchFields() throws {

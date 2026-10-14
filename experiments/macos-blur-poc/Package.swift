@@ -13,15 +13,17 @@ let package = Package(
     ],
     targets: [
         .target(name: "PoCCore"),
+        .target(name: "ContourProbeCore"),
         .target(
             name: "Sensveil",
             dependencies: ["PoCCore"],
             resources: [.process("Resources")]
         ),
         .executableTarget(name: "SensveilApp", dependencies: ["Sensveil"]),
-        .executableTarget(name: "SensveilPoC", dependencies: ["PoCCore"]),
-        .executableTarget(name: "SensveilFixture"),
+        .executableTarget(name: "SensveilPoC", dependencies: ["PoCCore", "ContourProbeCore"]),
+        .executableTarget(name: "SensveilFixture", dependencies: ["ContourProbeCore"]),
         .testTarget(name: "PoCCoreTests", dependencies: ["PoCCore"]),
+        .testTarget(name: "ContourProbeCoreTests", dependencies: ["ContourProbeCore"]),
         .testTarget(name: "SensveilTests", dependencies: ["Sensveil"])
     ]
 )

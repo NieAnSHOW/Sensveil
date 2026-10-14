@@ -4,6 +4,8 @@ import PoCCore
 
 @MainActor
 final class PermissionCoordinator {
+    static var accessibilityIsGranted: Bool { AXIsProcessTrusted() }
+
     func accessibilityStatus() -> PermissionState {
         AXIsProcessTrusted() ? .granted : .notGranted
     }

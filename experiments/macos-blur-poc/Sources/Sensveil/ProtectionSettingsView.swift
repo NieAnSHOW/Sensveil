@@ -26,6 +26,9 @@ struct ProtectionRangeDraft: Identifiable, Equatable {
 struct ProtectionSettingsDraft: Equatable {
     var mode: ProtectionScheduleMode
     var weeklyRanges: [[ProtectionRangeDraft]]
+    // Selection is editing state, not a new persisted schedule field. An
+    // empty day remains selected while the user edits its ranges.
+    private(set) var selectedWeekdays: Set<Int>
     var followsMainlandHolidays: Bool
     var holidayRanges: [ProtectionRangeDraft]
     var makeupWorkdayRanges: [ProtectionRangeDraft]
@@ -33,9 +36,22 @@ struct ProtectionSettingsDraft: Equatable {
     init(schedule: ProtectionSchedule) {
         mode = schedule.mode
         weeklyRanges = schedule.weeklyRanges.map { $0.map(ProtectionRangeDraft.init) }
+        selectedWeekdays = Set(schedule.weeklyRanges.indices.filter { !schedule.weeklyRanges[$0].isEmpty })
         followsMainlandHolidays = schedule.followsMainlandHolidays
         holidayRanges = schedule.holidayRanges.map(ProtectionRangeDraft.init)
         makeupWorkdayRanges = schedule.makeupWorkdayRanges.map(ProtectionRangeDraft.init)
+    }
+
+    mutating func setWeekday(_ index: Int, selected: Bool) {
+        guard weeklyRanges.indices.contains(index) else { return }
+        if selected {
+            if selectedWeekdays.insert(index).inserted, weeklyRanges[index].isEmpty {
+                weeklyRanges[index] = [ProtectionRangeDraft(startMinute: 540, endMinute: 1080)]
+            }
+        } else {
+            selectedWeekdays.remove(index)
+            weeklyRanges[index].removeAll()
+        }
     }
 
     var scheduleValue: ProtectionSchedule {
@@ -61,6 +77,7 @@ public struct ProtectionSettingsView: View {
     @State private var draft: ProtectionSettingsDraft
     @State private var draftBlurLevel: BlurLevel
     @State private var draftShowsLabel: Bool
+    @State private var draftTransition: ProtectionTransition
     @State private var saveError: String?
 
     public init(controller: SensveilController) {
@@ -68,6 +85,7 @@ public struct ProtectionSettingsView: View {
         _draft = State(initialValue: ProtectionSettingsDraft(schedule: controller.configuration.schedule))
         _draftBlurLevel = State(initialValue: controller.configuration.blurLevel)
         _draftShowsLabel = State(initialValue: controller.configuration.showsProtectionLabel)
+        _draftTransition = State(initialValue: controller.configuration.protectionTransition)
     }
 
     public var body: some View {
@@ -78,9 +96,25 @@ public struct ProtectionSettingsView: View {
                 Text("最强").tag(BlurLevel.strongest)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("模糊档位")
 
+            if ProtectionTransition.isUserSelectable {
+                HStack {
+                    Text("过渡动画")
+                    Picker("过渡动画", selection: $draftTransition) {
+                        Text("200ms").tag(ProtectionTransition.ms200)
+                        Text("500ms").tag(ProtectionTransition.ms500)
+                        Text("800ms").tag(ProtectionTransition.ms800)
+                        Text("关闭动画").tag(ProtectionTransition.off)
+                    }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("过渡动画")
+                }
+            }
+
             Toggle("显示守护文案（Sensveil 守护中）", isOn: $draftShowsLabel)
-            Text("遮罩按目标窗口的真实轮廓自动匹配；轮廓无法识别的窗口会显示无法保护。过渡动画固定启用（200 毫秒）。")
+            Text("模糊档位保存后应用于窗口。守护文案在受支持窗口确认保护后显示。")
                 .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("圆角采用外扩覆盖。当前支持本机单显示器普通窗口。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             Picker("保护时段", selection: $draft.mode) {
                 Text("全天保护").tag(ProtectionScheduleMode.allDay)
@@ -114,9 +148,26 @@ public struct ProtectionSettingsView: View {
 
     @ViewBuilder
     private var scheduleEditor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(0..<7, id: \.self) { index in
-                DisclosureGroup {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("每周日期（可多选）").font(.callout)
+            HStack(spacing: 12) {
+                ForEach(0..<7, id: \.self) { index in
+                    Toggle(Self.weekdayLabels[index], isOn: weekdayBinding(index))
+                        .toggleStyle(.checkbox)
+                        .accessibilityLabel(Self.weekdayLabels[index])
+                }
+            }
+            Text("逐一设置所选日期；取消选择会清空该日时段，保存后生效。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(draft.selectedWeekdays.sorted(), id: \.self) { index in
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider()
+                    HStack {
+                        Text(Self.weekdayLabels[index]).font(.headline)
+                        Text(daySummary(draft.weeklyRanges[index]))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     ForEach($draft.weeklyRanges[index]) { $row in
                         rangeRow($row)
                     }
@@ -124,12 +175,6 @@ public struct ProtectionSettingsView: View {
                         draft.weeklyRanges[index].append(newRow(after: draft.weeklyRanges[index].last))
                     } label: { Label("添加时段", systemImage: "plus") }
                     .accessibilityLabel("为\(Self.weekdayLabels[index])添加时段")
-                } label: {
-                    HStack {
-                        Text(Self.weekdayLabels[index]).frame(width: 40, alignment: .leading)
-                        Text(daySummary(draft.weeklyRanges[index]))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
                 }
             }
         }
@@ -205,15 +250,28 @@ public struct ProtectionSettingsView: View {
         // Compare schedule values, not draft structs: row identity UUIDs are
         // regenerated on every conversion and must not mark the draft dirty.
         draft.scheduleValue != controller.configuration.schedule
+            || draft.selectedWeekdays != Set(controller.configuration.schedule.weeklyRanges.indices.filter {
+                !controller.configuration.schedule.weeklyRanges[$0].isEmpty
+            })
             || draftBlurLevel != controller.configuration.blurLevel
             || draftShowsLabel != controller.configuration.showsProtectionLabel
+            || (ProtectionTransition.isUserSelectable
+                && draftTransition != controller.configuration.protectionTransition)
     }
 
     private func discardDraft() {
         draft = ProtectionSettingsDraft(schedule: controller.configuration.schedule)
         draftBlurLevel = controller.configuration.blurLevel
         draftShowsLabel = controller.configuration.showsProtectionLabel
+        draftTransition = controller.configuration.protectionTransition
         saveError = nil
+    }
+
+    private func weekdayBinding(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { draft.selectedWeekdays.contains(index) },
+            set: { draft.setWeekday(index, selected: $0) }
+        )
     }
 
     private func save() {
@@ -221,7 +279,8 @@ public struct ProtectionSettingsView: View {
             try controller.saveProtectionSettings(
                 blurLevel: draftBlurLevel,
                 showsProtectionLabel: draftShowsLabel,
-                schedule: draft.scheduleValue)
+                schedule: draft.scheduleValue,
+                protectionTransition: ProtectionTransition.isUserSelectable ? draftTransition : nil)
             saveError = nil
             // Echo the persisted (normalized, merged) configuration back.
             draft = ProtectionSettingsDraft(schedule: controller.configuration.schedule)

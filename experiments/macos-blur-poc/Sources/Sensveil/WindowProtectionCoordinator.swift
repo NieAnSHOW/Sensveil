@@ -3,8 +3,8 @@ import Foundation
 import PoCCore
 
 /// Main-actor bridge between application focus, conservative window identity and
-/// the material adapter. The adapter's requestSubmitted result is deliberately
-/// kept unverified; no public AppKit API proves composited pixels are private.
+/// the material adapter. Scoped evidence must match the current window and
+/// settings; a submitted request alone remains unverified.
 @MainActor
 public final class WindowProtectionCoordinator {
     public var onStatusChange: (() -> Void)?
@@ -27,8 +27,9 @@ public final class WindowProtectionCoordinator {
         func retainTrackers(for instances: Set<ProcessInstance>)
         func snapshot(for instance: ProcessInstance) -> WindowSnapshot?
         func permissionStates() -> [PermissionState]
+        func setSettings(_ settings: OverlaySettings)
         var overlayKeys: Set<WindowKey> { get }
-        func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate]) -> [WindowKey: OverlayObservation]
+        func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate], animateForegroundRemoval: Bool) -> [WindowKey: OverlayObservation]
         func removeAllOverlays()
     }
 
@@ -77,14 +78,23 @@ public final class WindowProtectionCoordinator {
         isPaused = configuration.isGloballyPaused
         lifecycleSuspended = false
         isStarted = true
+        runtime.setSettings(OverlaySettings(
+            blurLevel: configuration.blurLevel, showsProtectionLabel: configuration.showsProtectionLabel,
+            protectionTransition: configuration.effectiveProtectionTransition))
+        // The production focus monitor emits startup synchronously. Reconcile
+        // once after runtime setup, including runtimes without that callback.
+        var starting = true
         runtime.start { [weak self] event in
+            if starting, case .startup = event.kind { return }
             self?.handle(event)
         }
+        starting = false
         reconcile()
     }
 
     public func stop() {
         guard isStarted else { return }
+        let previousStatuses = statuses
         scheduleTimer?.invalidate(); scheduleTimer = nil
         runtime.stop()
         runtime.removeAllOverlays()
@@ -94,7 +104,7 @@ public final class WindowProtectionCoordinator {
         statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .notRunning) })
         frontmostPID = nil
         isStarted = false
-        onStatusChange?()
+        if statuses != previousStatuses { onStatusChange?() }
     }
 
     /// Differential configuration update: overlays the new configuration no
@@ -104,6 +114,9 @@ public final class WindowProtectionCoordinator {
     public func setConfiguration(_ configuration: ProtectionConfiguration) {
         self.configuration = configuration
         isPaused = configuration.isGloballyPaused
+        runtime.setSettings(OverlaySettings(
+            blurLevel: configuration.blurLevel, showsProtectionLabel: configuration.showsProtectionLabel,
+            protectionTransition: configuration.effectiveProtectionTransition))
         guard isStarted else { return }
         reconcile()
     }
@@ -195,7 +208,13 @@ public final class WindowProtectionCoordinator {
 
     private func reconcile() {
         guard isStarted else { return }
-        defer { onStatusChange?() }
+        let previousStatuses = statuses
+        let previousScheduleEvaluation = scheduleEvaluation
+        defer {
+            if statuses != previousStatuses || scheduleEvaluation != previousScheduleEvaluation {
+                onStatusChange?()
+            }
+        }
         statuses.removeAll()
         refreshScheduleEvaluationAndRearmTimer()
         let apps = configuration.applications.filter(\.isEnabled)
@@ -272,8 +291,15 @@ public final class WindowProtectionCoordinator {
                 for key in snapshots[target.instance]?.windows.map(\.key) ?? [] { intents[key] = .remove }
             }
         }
-        let observations = runtime.reconcile(intents, windows: allWindows)
-        overlayKeys = runtime.overlayKeys.union(Set(observations.compactMap { key, value in value == .requestSubmitted ? key : nil }))
+        let allowFocusTransition = !input.isSuspended && !input.permissions.isEmpty
+            && input.permissions.allSatisfy { $0 == .granted }
+        let observations = runtime.reconcile(intents, windows: allWindows, animateForegroundRemoval: allowFocusTransition)
+        overlayKeys = runtime.overlayKeys.union(Set(observations.compactMap { key, value in
+            switch value {
+            case .requestSubmitted, .protected: return key
+            case .failed: return nil
+            }
+        }))
         updateStatuses(apps: apps, targets: targets, snapshots: snapshots, intents: intents, observations: observations)
     }
 
@@ -287,26 +313,52 @@ public final class WindowProtectionCoordinator {
             let appSnapshotValues = snapshotsFor(appTargets, snapshots: snapshots)
             // A running app with no visible, issue-free window has nothing to
             // protect; this is not a blur failure.
-            if !appSnapshotValues.isEmpty,
+            if appSnapshotValues.count == appTargets.count,
                appSnapshotValues.allSatisfy({ $0.windows.isEmpty && $0.issues.isEmpty }) {
                 statuses[app.bundleIdentifier] = .noVisibleWindows
                 continue
             }
-            let appKeys = Set(appTargets.flatMap { instance in snapshots[instance.instance]?.windows.map(\.key) ?? [] })
+            let windowsByKey = Dictionary(grouping: appSnapshotValues.flatMap(\.windows), by: \.key)
+            let appKeys = Set(windowsByKey.keys)
             let appIntents = intents.filter { appKeys.contains($0.key) }
             let appObservations = observations.filter { appKeys.contains($0.key) }
-            let failures = appSnapshotValues.flatMap { $0.issues.map { issueSummary($0) } }
+            var failures = appSnapshotValues.flatMap { $0.issues.map { issueSummary($0) } }
                 + appObservations.compactMap { _, value in if case .failed(let reason) = value { return sanitize(reason) }; return nil }
                 + appIntents.compactMap { _, value in if case .cannotProtect(let reason) = value { return sanitize(reason) }; return nil }
-            let submitted = appObservations.values.contains { $0 == OverlayObservation.requestSubmitted }
-            if submitted && failures.isEmpty {
-                statuses[app.bundleIdentifier] = .cannotProtect("Material request submitted; visual protection is unverified.")
-            } else if submitted {
+            if appSnapshotValues.count != appTargets.count {
+                failures.append("Current window snapshot is unavailable.")
+            }
+            var verifiedKeys = Set<WindowKey>()
+            for key in appKeys {
+                guard let windows = windowsByKey[key], windows.count == 1 else {
+                    failures.append("ambiguous window mapping")
+                    continue
+                }
+                switch appObservations[key] {
+                case .protected(let evidence):
+                    guard appIntents[key] == .attemptBlur,
+                          evidence.key == key,
+                          evidence.bounds == windows[0].bounds,
+                          evidence.blurLevel == configuration.blurLevel,
+                          evidence.validationRevision == OverlayProtectionEvidence.acceptedRevision else {
+                        failures.append("Current protection evidence does not match the window or settings.")
+                        continue
+                    }
+                    verifiedKeys.insert(key)
+                case .requestSubmitted:
+                    failures.append("Material request submitted; visual protection is unverified.")
+                case .failed:
+                    break
+                case nil:
+                    failures.append("Required protection evidence is unavailable.")
+                }
+            }
+            if !appKeys.isEmpty, verifiedKeys == appKeys, failures.isEmpty {
+                statuses[app.bundleIdentifier] = .protected
+            } else if !verifiedKeys.isEmpty {
                 statuses[app.bundleIdentifier] = .partialFailure(unique(failures))
             } else if !failures.isEmpty {
                 statuses[app.bundleIdentifier] = .cannotProtect(unique(failures).joined(separator: "; "))
-            } else if appIntents.values.contains(where: { if case .cannotProtect = $0 { return true }; return false }) {
-                statuses[app.bundleIdentifier] = .cannotProtect("Required protection evidence is unavailable.")
             } else {
                 statuses[app.bundleIdentifier] = .cannotProtect("No validated blur evidence is available.")
             }
@@ -454,6 +506,7 @@ final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
         return tracker.snapshot(for: instance)
     }
     func permissionStates() -> [PermissionState] { permissions() }
+    func setSettings(_ settings: OverlaySettings) { overlays.setSettings(settings) }
     private func scheduleWindowEvent() {
         guard onEvent != nil, pendingWindowEvent == nil else { return }
         let activeSession = session
@@ -466,11 +519,12 @@ final class AdapterRuntime: WindowProtectionCoordinator.Runtime {
     private func publish(_ kind: FocusEvent.Kind) {
         onEvent?(FocusEvent(receivedAt: .now, frontmostPID: currentFrontmostPID(), kind: kind, terminatedPID: nil))
     }
-    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate]) -> [WindowKey: OverlayObservation] {
+    func reconcile(_ intents: [WindowKey: OverlayIntent], windows: [WindowCandidate], animateForegroundRemoval: Bool) -> [WindowKey: OverlayObservation] {
         let screens = NSScreen.screens
         guard let primary = screens.first else { return intents.reduce(into: [:]) { result, entry in if case .cannotProtect(let reason) = entry.value { result[entry.key] = .failed(reason: reason) } } }
         let layout = ScreenLayout(primaryScreenFrame: primary.frame, screenFrames: screens.map(\.frame))
-        return overlays.reconcile(intents, windows: windows, screenLayout: layout)
+        return overlays.reconcile(intents, windows: windows, screenLayout: layout,
+            foregroundPID: animateForegroundRemoval ? currentFrontmostPID() : nil)
     }
     public func removeAllOverlays() { overlays.removeAll() }
 }

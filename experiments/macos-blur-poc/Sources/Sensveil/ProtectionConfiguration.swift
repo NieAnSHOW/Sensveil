@@ -56,11 +56,28 @@ public struct ProtectedApplication: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public enum ProtectionTransition: String, Codable, CaseIterable, Sendable {
+    public static let isUserSelectable = false
+
+    case ms200
+    case ms500
+    case ms800
+    case off
+
+    public var duration: TimeInterval? {
+        switch self {
+        case .ms200: 0.2
+        case .ms500: 0.5
+        case .ms800: 0.8
+        case .off: nil
+        }
+    }
+}
+
 public struct ProtectionConfiguration: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
-    /// Schema 1 files predate the global protection settings; they are decoded
-    /// with defaults for the new fields and stay untouched on disk until the
-    /// next user save writes them back as schema 2.
+    public static let currentSchemaVersion = 3
+    /// Legacy files use defaults for newer fields and stay untouched on disk
+    /// until the next user save writes them back with the current schema.
     public static let minimumSchemaVersion = 1
 
     public var schemaVersion: Int
@@ -69,6 +86,12 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
     public var blurLevel: BlurLevel
     public var showsProtectionLabel: Bool
     public var schedule: ProtectionSchedule
+    public var protectionTransition: ProtectionTransition
+
+    /// Keep stored choices for compatibility while the product uses fixed timing.
+    public var effectiveProtectionTransition: ProtectionTransition {
+        ProtectionTransition.isUserSelectable ? protectionTransition : .ms200
+    }
 
     public init(
         schemaVersion: Int = ProtectionConfiguration.currentSchemaVersion,
@@ -76,7 +99,8 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
         isGloballyPaused: Bool = false,
         blurLevel: BlurLevel = .standard,
         showsProtectionLabel: Bool = true,
-        schedule: ProtectionSchedule = .defaultConfiguration
+        schedule: ProtectionSchedule = .defaultConfiguration,
+        protectionTransition: ProtectionTransition = .ms200
     ) {
         self.schemaVersion = schemaVersion
         self.applications = applications
@@ -84,6 +108,7 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
         self.blurLevel = blurLevel
         self.showsProtectionLabel = showsProtectionLabel
         self.schedule = schedule
+        self.protectionTransition = protectionTransition
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -93,6 +118,7 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
         case blurLevel
         case showsProtectionLabel
         case schedule
+        case protectionTransition
     }
 
     public init(from decoder: Decoder) throws {
@@ -115,10 +141,13 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
             showsProtectionLabel = true
             schedule = .defaultConfiguration
         }
+        protectionTransition = version >= 3
+            ? try container.decode(ProtectionTransition.self, forKey: .protectionTransition)
+            : .ms200
     }
 
     /// Always encodes the current schema version so that a configuration
-    /// migrated in memory is written back as schema 2 on the next save.
+    /// migrated in memory is upgraded on the next save.
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
@@ -127,6 +156,7 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
         try container.encode(blurLevel, forKey: .blurLevel)
         try container.encode(showsProtectionLabel, forKey: .showsProtectionLabel)
         try container.encode(schedule, forKey: .schedule)
+        try container.encode(protectionTransition, forKey: .protectionTransition)
     }
 }
 
@@ -205,7 +235,7 @@ public final class ConfigurationStore {
         }
         normalized.applications = deduplicated(normalized.applications)
         // Encoding always writes currentSchemaVersion, so a configuration
-        // migrated from schema 1 is persisted as schema 2 here.
+        // migrated from a legacy schema is persisted with the current schema.
         normalized.schemaVersion = ProtectionConfiguration.currentSchemaVersion
         normalized.schedule = try normalized.schedule.normalized()
         let data: Data

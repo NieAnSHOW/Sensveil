@@ -17,11 +17,16 @@ final class PoCController: ObservableObject {
     @Published private(set) var experimentMessage = "Experiment not validated"
     @Published private(set) var windowMessage = "No window snapshot"
     @Published private(set) var measurementMessage = "No measurements"
+    @Published private(set) var orderingDiagnosticMessage = "No ordering metadata snapshot"
     @Published private(set) var latestSnapshot: WindowSnapshot?
     @Published private(set) var frontmostInstance: ProcessInstance?
     @Published private(set) var isSuspended = false
     @Published private(set) var requiresRevalidation = true
     @Published private(set) var selectedInstance: ProcessInstance?
+    @Published private(set) var contourWindowID: UInt32?
+    @Published private(set) var isContourCaptureRunning = false
+    @Published private(set) var contourMessage = "Contour study stopped; no capture"
+    @Published private(set) var contourSilhouette: CGImage?
 
     var onStateChange: (@MainActor () -> Void)?
     private let permissions = PermissionCoordinator()
@@ -34,6 +39,21 @@ final class PoCController: ObservableObject {
     private var permissionPoll: Task<Void, Never>?
     private var displayOptionsObserver: NSObjectProtocol?
     private var appearanceObserver: NSKeyValueObservation?
+    private var contourRevision = UUID()
+    private var contourTask: Task<Void, Never>?
+    private var contourTrackedWindow: WindowCandidate?
+    private var contourDisplaySignature: [ContourDisplay]?
+    private struct ContourDisplay: Equatable {
+        let frame: CGRect
+        let scale: CGFloat
+        let identifier: NSNumber?
+    }
+    private enum ReconcileSource: String {
+        case explicit, snapshot, focusWithdrawal, permissionPoll, experiment, materialTier, invalidation
+    }
+    private var lastReconcileSource: ReconcileSource = .explicit
+    private var reconcileCount: UInt64 = 0
+    private var snapshotReconcileCount: UInt64 = 0
 
     init() {
         refreshPermissions()
@@ -49,9 +69,12 @@ final class PoCController: ObservableObject {
             guard let self else { return }
             self.frontmostInstance = event.frontmost
             self.measurements.record(MeasurementEvent(phase: .focusReceived, receivedAt: event.receivedAt))
-            // Activation removes foreground overlays before enumeration. Lifecycle/layout
-            // events must invalidate their stale snapshot before attempting reconciliation.
-            if case .activation = event.kind { self.notifyStateChange() }
+            // Foreground or unknown activation withdraws overlays before enumeration.
+            // Background activation reconciles only through the fresh snapshot callback.
+            if case .activation = event.kind,
+               self.frontmostInstance == nil || self.frontmostInstance == self.selectedInstance {
+                self.notifyStateChange(source: .focusWithdrawal)
+            }
             switch event.kind {
             case .sleep:
                 self.isSuspended = true
@@ -71,7 +94,7 @@ final class PoCController: ObservableObject {
             default: self.windowTracker.refresh()
             }
             self.updateMeasurementMessage()
-            self.notifyStateChange()
+            self.publishStateChange()
         }
         permissionPoll = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -125,13 +148,14 @@ final class PoCController: ObservableObject {
         targetMessage = "Sensveil Fixture (verified running instance)"
         invalidateSnapshot()
         restartTracking()
-        notifyStateChange()
+        publishStateChange()
     }
 
     private func restartTracking() {
         guard let selectedInstance, !isSuspended else { return }
         windowTracker.start(for: selectedInstance) { [weak self] snapshot in
             guard let self, self.selectedInstance == snapshot.target else { return }
+            self.validateContourSnapshot(snapshot)
             self.latestSnapshot = snapshot
             self.requiresRevalidation = !snapshot.issues.isEmpty
             let accepted = snapshot.windows.count
@@ -145,7 +169,7 @@ final class PoCController: ObservableObject {
             self.measurements.record(MeasurementEvent(phase: .snapshotReady, windowCount: accepted,
                                                        failures: snapshot.issues.map(\.kind)))
             self.updateMeasurementMessage()
-            self.notifyStateChange()
+            self.notifyStateChange(source: .snapshot)
         }
     }
 
@@ -157,9 +181,9 @@ final class PoCController: ObservableObject {
             }
         }
         isExperimentEnabled = enabled
-        overlayCoordinator.removeAll()
+        overlayCoordinator.removeAll(clearOrderingDiagnostics: true)
         experimentMessage = enabled ? "Experiment enabled; protection not validated" : "Experiment not validated"
-        notifyStateChange()
+        notifyStateChange(source: .experiment)
     }
 
     /// Operator-selected material candidate. An existing overlay re-anchors before it re-crossfades.
@@ -167,7 +191,7 @@ final class PoCController: ObservableObject {
         guard tier != materialTier else { return }
         materialTier = tier
         overlayCoordinator.setTier(tier)
-        notifyStateChange()
+        notifyStateChange(source: .materialTier)
     }
 
     var materialParameterSummary: String { overlayCoordinator.parameterSummary }
@@ -176,8 +200,16 @@ final class PoCController: ObservableObject {
 
     func refreshPermissions() {
         let previousPermission = accessibilityPermission
+        let previousScreenCapturePermission = screenCapturePermission
         accessibilityPermission = permissions.accessibilityStatus()
         screenCapturePermission = permissions.screenCaptureStatus()
+        if (accessibilityPermission != .granted || screenCapturePermission != .granted),
+           contourTrackedWindow != nil || previousPermission != accessibilityPermission ||
+           previousScreenCapturePermission != screenCapturePermission {
+            invalidateContour(message: "Contour study requires Accessibility and Screen Recording")
+        } else if previousScreenCapturePermission != screenCapturePermission {
+            invalidateContour(message: "Screen Recording changed; capture manually after revalidation")
+        }
         if let application = selectedApplication {
             guard Self.isVerifiedFixture(application), let launchDate = application.launchDate,
                   registry.observe(pid: application.processIdentifier, launchDate: launchDate) == selectedInstance else {
@@ -188,8 +220,10 @@ final class PoCController: ObservableObject {
         if accessibilityPermission != previousPermission {
             invalidateSnapshot()
             windowTracker.refresh()
+            publishStateChange()
+        } else {
+            notifyStateChange(source: .permissionPoll)
         }
-        notifyStateChange()
     }
 
     func requestAccessibility() {
@@ -202,7 +236,110 @@ final class PoCController: ObservableObject {
         refreshPermissions()
     }
 
+    var contourWindows: [WindowCandidate] { latestSnapshot?.windows ?? [] }
+
+    var canCaptureContour: Bool {
+        !isContourCaptureRunning && !isSuspended && accessibilityPermission == .granted &&
+            screenCapturePermission == .granted && selectedContourWindow != nil
+    }
+
+    private var selectedContourWindow: WindowCandidate? {
+        guard let contourWindowID, let selectedInstance else { return nil }
+        let matches = contourWindows.filter { $0.key.process == selectedInstance && $0.key.cgWindowID == contourWindowID }
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    func selectContourWindow(_ windowID: UInt32?) {
+        guard windowID != contourWindowID else { return }
+        invalidateContour(message: "Window selection changed; no contour result")
+        contourWindowID = windowID
+    }
+
+    func stopContourStudy() {
+        invalidateContour(message: "Contour study stopped; result discarded")
+    }
+
+    func captureContourOnce() {
+        guard canCaptureContour, let window = selectedContourWindow else { return }
+        invalidateContour(message: "Capturing one synthetic fixture window")
+        let revision = contourRevision
+        let displays = currentContourDisplays()
+        guard contourTargetIsCurrent(window, displays: displays) else {
+            contourMessage = "Cannot capture: current fixture geometry, display or permission is unavailable"
+            return
+        }
+        contourTrackedWindow = window
+        contourDisplaySignature = displays
+        isContourCaptureRunning = true
+        contourTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Cancellation expires the ticket but does not release the in-flight slot:
+            // SCK may finish its callback later and a second request must not overlap it.
+            defer {
+                self.contourTask = nil
+                self.isContourCaptureRunning = false
+            }
+            do {
+                let artifact = try await ContourProbe.capture(window: window) { [weak self] in
+                    guard let self, self.contourRevision == revision else { return false }
+                    return self.contourTargetIsCurrent(window, displays: displays)
+                }
+                guard self.contourRevision == revision,
+                      self.contourTargetIsCurrent(window, displays: displays) else { return }
+                self.contourSilhouette = artifact.silhouette
+                self.contourMessage = "Synthetic CG window \(window.key.cgWindowID)\n" + artifact.summary
+            } catch {
+                guard self.contourRevision == revision else { return }
+                self.contourSilhouette = nil
+                self.contourMessage = (error as? ContourProbeFailure)?.message
+                    ?? "Cannot determine contour: alpha analysis failed"
+            }
+        }
+    }
+
+    private func contourTargetIsCurrent(_ window: WindowCandidate, displays: [ContourDisplay]) -> Bool {
+        guard !isSuspended, contourWindowID == window.key.cgWindowID,
+              selectedInstance == window.key.process,
+              permissions.accessibilityStatus() == .granted, permissions.screenCaptureStatus() == .granted,
+              let application = selectedApplication, Self.isVerifiedFixture(application),
+              let launchDate = application.launchDate,
+              registry.observe(pid: application.processIdentifier, launchDate: launchDate) == window.key.process,
+              displays == currentContourDisplays(), let primary = NSScreen.screens.first else { return false }
+        let rect = CoordinateTransform.appKitRect(from: window.bounds, primaryScreenFrame: primary.frame)
+        // This initial spike excludes offscreen and cross-display captures to avoid
+        // interpreting clipping or mixed backing scales as an outer window boundary.
+        guard displays.contains(where: { $0.frame.contains(rect) && $0.scale.isFinite && $0.scale > 0 }) else { return false }
+        let snapshot = windowTracker.snapshot(for: window.key.process)
+        let matches = snapshot.windows.filter { $0.key == window.key }
+        return matches.count == 1 && matches.first == window
+    }
+
+    private func currentContourDisplays() -> [ContourDisplay] {
+        NSScreen.screens.map { ContourDisplay(frame: $0.frame, scale: $0.backingScaleFactor,
+            identifier: $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber) }
+    }
+
+    private func validateContourSnapshot(_ snapshot: WindowSnapshot) {
+        guard let tracked = contourTrackedWindow else { return }
+        let matches = snapshot.windows.filter { $0.key == tracked.key }
+        guard matches.count == 1, matches.first == tracked,
+              contourDisplaySignature == currentContourDisplays() else {
+            invalidateContour(message: "Discarded: fixture window geometry or display changed")
+            return
+        }
+    }
+
+    private func invalidateContour(message: String) {
+        contourRevision = UUID()
+        contourTask?.cancel()
+        contourTrackedWindow = nil
+        contourDisplaySignature = nil
+        contourSilhouette = nil
+        contourMessage = message
+    }
+
     private func clearTarget(message: String) {
+        contourWindowID = nil
         selectedApplication = nil
         selectedBundleIdentifier = nil
         selectedInstance = nil
@@ -216,12 +353,13 @@ final class PoCController: ObservableObject {
     }
 
     private func invalidateSnapshot() {
+        invalidateContour(message: "Contour evidence invalidated; capture manually after revalidation")
         overlayCoordinator.removeAll()
         latestSnapshot = nil
         requiresRevalidation = true
         measurements.record(MeasurementEvent(phase: .invalidated))
         updateMeasurementMessage()
-        notifyStateChange()
+        notifyStateChange(source: .invalidation)
     }
 
     private func materialSettingsChanged() {
@@ -229,8 +367,18 @@ final class PoCController: ObservableObject {
         windowTracker.refresh()
     }
 
-    private func notifyStateChange() {
+    private func notifyStateChange(source: ReconcileSource = .explicit) {
+        lastReconcileSource = source
+        reconcileCount &+= 1
+        if source == .snapshot { snapshotReconcileCount &+= 1 }
         reconcileOverlays()
+        publishStateChange()
+    }
+
+    // Publishing after a synchronous tracker callback must not repeat ordering requests.
+    private func publishStateChange() {
+        orderingDiagnosticMessage = "Reconciles \(reconcileCount); snapshots \(snapshotReconcileCount); last \(lastReconcileSource.rawValue)\n"
+            + overlayCoordinator.orderingDiagnosticSummary
         onStateChange?()
     }
 
@@ -258,9 +406,13 @@ final class PoCController: ObservableObject {
             if case .failed(let reason) = observation { return reason }
             return nil
         }
-        if !failures.isEmpty {
+        let requestCount = observations.values.filter { $0 == .requestSubmitted }.count
+        if !failures.isEmpty, requestCount > 0 {
+            experimentMessage = "Partial experimental requests (unverified): \(requestCount) submitted; \(failures.count) windows cannot protect. "
+                + Set(failures).sorted().joined(separator: "; ")
+        } else if !failures.isEmpty {
             experimentMessage = "Cannot protect: " + Set(failures).sorted().joined(separator: "; ")
-        } else if observations.values.contains(.requestSubmitted) {
+        } else if requestCount > 0 {
             experimentMessage = "Experimental overlay active (unverified)"
         } else if frontmostInstance == selectedInstance, selectedInstance != nil {
             experimentMessage = "Fixture foreground; overlays removed (experiment unverified)"

@@ -5,6 +5,10 @@ final class PoCAppDelegate: NSObject, NSApplicationDelegate {
     private var controller: PoCController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--validate-ordering") {
+            Task { exit(await OrderingValidation.run()) }
+            return
+        }
         let controller = PoCController()
         self.controller = controller
         controller.showDiagnostics()

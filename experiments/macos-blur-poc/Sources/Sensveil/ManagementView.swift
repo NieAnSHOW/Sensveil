@@ -5,6 +5,7 @@ public struct ManagementView: View {
     @ObservedObject private var controller: SensveilController
     @ObservedObject private var permissions: PermissionCoordinator
     @State private var showDiagnosticPermissions = false
+    @State private var showApplicationPicker = false
 
     public init(controller: SensveilController, permissions: PermissionCoordinator) {
         self.controller = controller; self.permissions = permissions
@@ -36,7 +37,7 @@ public struct ManagementView: View {
                 ForEach(controller.configuration.applications) { application in configuredRow(application) }
             }
             HStack {
-                Button { Task { await controller.addApplication() } } label: { Label("添加应用…", systemImage: "plus") }
+                Button { showApplicationPicker = true } label: { Label("添加应用…", systemImage: "plus") }
                     .disabled(!controller.canAddApplication)
                 Text(controller.freeLimitMessage).font(.caption).foregroundStyle(.secondary)
             }
@@ -45,30 +46,10 @@ public struct ManagementView: View {
             }
             Divider()
             HStack {
-                Text("可添加应用").font(.headline)
-                Spacer()
-                Button { controller.refreshApplications() } label: { Image(systemName: "arrow.clockwise") }.help("刷新应用列表")
-            }
-            TextField("搜索名称或应用标识", text: $controller.searchText).textFieldStyle(.roundedBorder)
-            ForEach(controller.applications) { application in
-                HStack(spacing: 10) {
-                    appIcon(application.iconData)
-                    appIdentity(application.displayName, bundleIdentifier: application.bundleIdentifier)
-                    Spacer()
-                    if controller.configuration.applications.contains(where: { $0.id == application.id }) {
-                        Image(systemName: "checkmark").foregroundStyle(.secondary).help("已添加")
-                    } else {
-                        Button { controller.addApplication(application) } label: { Image(systemName: "plus") }
-                            .help("添加 \(application.displayName)").disabled(!controller.canAddApplication)
-                    }
-                }.padding(.vertical, 3)
-            }
-            Divider()
-            HStack {
                 Label("辅助功能", systemImage: "accessibility")
                 Spacer()
                 Text(permissions.accessibility == .granted ? "已授予" : "未授予").foregroundStyle(.secondary)
-                Button("请求权限") { permissions.requestAccessibility(); controller.refreshApplications() }
+                Button("请求权限") { permissions.requestAccessibility() }
                     .disabled(permissions.accessibility == .granted)
             }
             DisclosureGroup("可选诊断权限", isExpanded: $showDiagnosticPermissions) {
@@ -76,7 +57,7 @@ public struct ManagementView: View {
                     Text("屏幕录制（仅诊断）")
                     Spacer()
                     Text(permissions.screenRecording == .granted ? "已授予" : "未授予").foregroundStyle(.secondary)
-                    Button("请求权限") { permissions.requestScreenRecording(); controller.refreshApplications() }
+                    Button("请求权限") { permissions.requestScreenRecording() }
                         .disabled(permissions.screenRecording == .granted)
                 }.padding(.top, 6)
             }
@@ -85,8 +66,9 @@ public struct ManagementView: View {
         }
         .padding(20)
         .frame(minWidth: 520, minHeight: 600)
-        .onChange(of: permissions.accessibility) { _, _ in controller.refreshApplications() }
-        .onChange(of: permissions.screenRecording) { _, _ in controller.refreshApplications() }
+        .sheet(isPresented: $showApplicationPicker) {
+            ApplicationPickerView(controller: controller)
+        }
     }
 
     private func configuredRow(_ application: ProtectedApplication) -> some View {

@@ -13,8 +13,10 @@ public final class PermissionCoordinator: ObservableObject {
     deinit { pollTask?.cancel() }
 
     public func refresh() {
-        accessibility = AXIsProcessTrusted() ? .granted : .notGranted
-        screenRecording = CGPreflightScreenCaptureAccess() ? .granted : .notGranted
+        let currentAccessibility: PermissionState = AXIsProcessTrusted() ? .granted : .notGranted
+        let currentScreenRecording: PermissionState = CGPreflightScreenCaptureAccess() ? .granted : .notGranted
+        if accessibility != currentAccessibility { accessibility = currentAccessibility }
+        if screenRecording != currentScreenRecording { screenRecording = currentScreenRecording }
     }
 
     @discardableResult public func requestAccessibility() -> PermissionState {

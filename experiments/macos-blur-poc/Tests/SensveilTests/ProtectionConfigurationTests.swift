@@ -146,6 +146,7 @@ final class ProtectionConfigurationTests: XCTestCase {
         XCTAssertTrue(migrated.isGloballyPaused)
         XCTAssertEqual(migrated.blurLevel, .standard)
         XCTAssertTrue(migrated.showsProtectionLabel)
+        XCTAssertEqual(migrated.protectionTransition, .ms200)
 
         // The weekly ranges are pre-stored even though the default mode is all
         // day, so switching modes never resets saved data.
@@ -205,10 +206,49 @@ final class ProtectionConfigurationTests: XCTestCase {
     func testSchemaTwoFileMissingNewFieldIsNotDefaulted() throws {
         let encoded = try JSONEncoder().encode(ProtectionConfiguration())
         var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["schemaVersion"] = 2
         XCTAssertNotNil(object.removeValue(forKey: "showsProtectionLabel"))
         let incomplete = try JSONSerialization.data(withJSONObject: object)
 
         XCTAssertThrowsError(try JSONDecoder().decode(ProtectionConfiguration.self, from: incomplete))
+    }
+
+    func testSchemaTwoDefaultsTransitionAndUpgradesOnEncoding() throws {
+        let original = Data(schemaTwoJSON(blurLevel: "strongest", mode: "specified").utf8)
+        let migrated = try JSONDecoder().decode(ProtectionConfiguration.self, from: original)
+        XCTAssertEqual(migrated.schemaVersion, 2)
+        XCTAssertEqual(migrated.protectionTransition, .ms200)
+        XCTAssertEqual(migrated.blurLevel, .strongest)
+        XCTAssertEqual(migrated.schedule.mode, .specified)
+
+        let encoded = try JSONEncoder().encode(migrated)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["schemaVersion"] as? Int, 3)
+        XCTAssertEqual(object["protectionTransition"] as? String, "ms200")
+    }
+
+    func testEveryTransitionRoundTripsWithItsDuration() throws {
+        XCTAssertEqual(ProtectionTransition.allCases, [.ms200, .ms500, .ms800, .off])
+        let durations: [TimeInterval?] = [0.2, 0.5, 0.8, nil]
+        for (transition, duration) in zip(ProtectionTransition.allCases, durations) {
+            XCTAssertEqual(transition.duration, duration)
+            let configuration = ProtectionConfiguration(protectionTransition: transition)
+            let data = try JSONEncoder().encode(configuration)
+            XCTAssertEqual(try JSONDecoder().decode(ProtectionConfiguration.self, from: data), configuration)
+        }
+    }
+
+    @MainActor
+    func testSchemaThreeRejectsMissingAndUnknownTransitionWithoutReplacingFile() throws {
+        let encoded = try JSONEncoder().encode(ProtectionConfiguration())
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["schemaVersion"] = 3
+        object.removeValue(forKey: "protectionTransition")
+        let missing = try JSONSerialization.data(withJSONObject: object)
+        try assertLoadingRejectsPreservingBytes(try XCTUnwrap(String(data: missing, encoding: .utf8)))
+        object["protectionTransition"] = "ms300"
+        let unknown = try JSONSerialization.data(withJSONObject: object)
+        try assertLoadingRejectsPreservingBytes(try XCTUnwrap(String(data: unknown, encoding: .utf8)))
     }
 
     // MARK: - Schedule validation and normalization
@@ -326,19 +366,26 @@ final class ProtectionConfigurationTests: XCTestCase {
 
         var schedule = ProtectionSchedule.defaultConfiguration
         schedule.mode = .specified
-        try controller.saveProtectionSettings(blurLevel: .enhanced, showsProtectionLabel: false, schedule: schedule)
+        try controller.saveProtectionSettings(blurLevel: .enhanced, showsProtectionLabel: false, schedule: schedule, protectionTransition: .ms800)
         XCTAssertEqual(controller.configuration.blurLevel, .enhanced)
         XCTAssertFalse(controller.configuration.showsProtectionLabel)
         XCTAssertEqual(controller.configuration.schedule.mode, .specified)
+        XCTAssertEqual(controller.configuration.protectionTransition, .ms800)
         XCTAssertNil(controller.errorMessage)
 
         var invalid = schedule
         invalid.weeklyRanges[0] = [ProtectionTimeRange(startMinute: 1080, endMinute: 1080)]
-        XCTAssertThrowsError(try controller.saveProtectionSettings(blurLevel: .strongest, showsProtectionLabel: true, schedule: invalid))
+        XCTAssertThrowsError(try controller.saveProtectionSettings(blurLevel: .strongest, showsProtectionLabel: true, schedule: invalid, protectionTransition: .off))
         XCTAssertEqual(controller.configuration.blurLevel, .enhanced)
         XCTAssertTrue(controller.configuration.showsProtectionLabel == false)
         XCTAssertNotNil(controller.errorMessage)
         XCTAssertEqual(try store.load().blurLevel, .enhanced)
+        XCTAssertEqual(controller.configuration.protectionTransition, .ms800)
+        XCTAssertEqual(try store.load().protectionTransition, .ms800)
+
+        try controller.saveProtectionSettings(blurLevel: .standard, showsProtectionLabel: true, schedule: schedule)
+        XCTAssertEqual(controller.configuration.protectionTransition, .ms800)
+        XCTAssertEqual(try store.load().protectionTransition, .ms800)
     }
 
     private func schemaTwoJSON(blurLevel: String = "standard", mode: String = "allDay", weeklyRanges: String = "[[],[],[],[],[],[],[]]") -> String {

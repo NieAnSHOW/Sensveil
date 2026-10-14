@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在现有 macOS 产品中实现真实轮廓匹配、三档模糊、可关闭的守护文案、安全的整体过渡，以及每周多时段和离线中国大陆节假日/调休规则。
+**Goal:** 在现有 macOS 产品中实现统一圆角外扩覆盖、三档模糊、可关闭的守护文案、安全的整体过渡，以及每周多时段和离线中国大陆节假日/调休规则。
 
 **Architecture:** 沿用 SwiftPM 工程、版本化 Codable 配置、SensveilController 保存后生效流程、WindowProtectionCoordinator 应用级焦点和既有 overlay 协议。新增纯函数时段判定和只读内置节假日日历；协调器持有唯一边界定时器。视觉能力先实测放行，再扩展现有模糊实现，不创建通用插件引擎或并存的旧配置入口。
 
@@ -12,15 +12,17 @@
 
 ## Global Constraints
 
+2026-10-14 最新过渡裁决：保留四档与动画代码，隐藏产品设置入口，实际进入/退出固定200ms；原schema3值保留兼容但不控制当前运行。以下四档步骤作为历史实现记录，体验反馈未通过，不能按已验收宣传。
+
 - 一期只考虑 macOS；Windows 暂缓。
-- 全局设置：模糊档位、文案显示、保护时段；轮廓自动匹配目标窗口，不提供随意裁剪或固定半径替代匹配的控制项。
+- 全局设置：模糊档位、文案显示、保护时段；圆角为固定行为。2026-10-14 用户批准统一 20pt 圆弧、每边外扩 8pt 完整包围目标矩形，接受外围小范围模糊，不再要求真实轮廓匹配，不新增圆角设置项。
 - 模糊档位为“标准、增强、最强”，默认标准；文案默认显示，可关闭；全天保护默认开启。
 - 指定时段首次预置周一至周五 09:00–18:00，周末为空；切换模式不重置已保存数据。
 - 节假日跟随默认关闭；节假日/调休休息时段默认空，调休上班时段默认 09:00–18:00。
 - 多区间、跨午夜、开始含/结束不含；相同起止拒绝保存；跨日区间归属开始日，节假日不能截断前日区间。
 - 本机时区，不自动使用北京时间。日历按开始日所属年份查找，未知年份退回每周规则并独立提示，不复用旧年安排。
 - 日历只随应用版本内置更新，安装升级并重启后生效；无热更新、后台联网、节日日期猜测或云端配置。
-- 整体过渡固定 200ms，上限 300ms，无独立开关；不能从暴露可读内容的透明状态开始。遵循系统“减少动态效果”，必要时取消视觉动画但不取消保护。
+- 整体过渡全局四档200ms/500ms/800ms/关闭，默认200ms（2026-10-14 用户更新）；不能从暴露可读内容的透明状态开始，较长视觉动画不延长最低安全模糊预算。系统“减少动态效果”优先；保存新档位立即取消旧动画。
 - 真实保护证据成立才可显示“已保护”或“Sensveil 守护中”；请求提交、回调成功、panel 存在和绘制完成均不是隐私强度证据。
 - 失焦至达到最低安全模糊的 PRD 预算仍为 p95 ≤150ms、最大 ≤300ms。200ms 是视觉过渡时间，不得额外延迟安全模糊建立或用户输入。
 - 失败显示无法保护，不用实色替代；不使用私有 CGS/AX API、全局置顶、猜测 helper 身份或强行激活目标。
@@ -29,6 +31,8 @@
 - 本次不实现收费、试用、激活、登录启动、自动更新、Windows 或按应用独立时段。
 
 ## 当前起点与阻断项
+
+2026-10-13 性能热修复：已修复启动时大图标 TIFF/PNG 处理、同步应用目录刷新与重复界面通知造成的严重卡顿；119 个测试通过，release 产品已安装并运行于 `/Applications/Sensveil.app`，修复后本机采样未再出现原图标热点。证据、负载差异及剩余限制见 [PERFORMANCE_VALIDATION](../../engineering/PERFORMANCE_VALIDATION.md)。Task 8 仍未开始：材料 Gate 为 UNMEASURED，3 人可读性评估尚无评估者，性能修复不代替视觉门槛放行。
 
 | 位置 | 观察到的行为 | 开发影响 |
 | --- | --- | --- |
@@ -41,7 +45,7 @@
 | `Package.swift:16`、`build-apps.sh:25–39` | 无产品资源声明，脚本只拷贝图标 | 节假日资源须同时在 swift test 和安装 app 可读 |
 | `POC_RESULTS.md:74–90` | 材料 Gate 为 UNMEASURED | 不能跳过层级/输入验证直接开发捕获路径 |
 
-最高风险：公开窗口元数据未提供已验证的真实圆角轮廓；现有材质无公开模糊半径控制；从透明度 0 淡入违反最低安全模糊要求。若实验不能满足需求，记录具体失败并请求产品裁决；不可擅自改成统一圆角、两档、文字动画或实色层。时段模块可完成，但不是整个需求交付完成。
+最高风险：扩大覆盖范围后的完整包含、外缘材料强度和相对层级仍需验证；现有材质无公开模糊半径控制；从透明度 0 淡入违反最低安全模糊要求。2026-10-14 用户已批准统一圆角外扩，见 [ADR-002](../../architecture/ADR-002-expanded-rounded-overlay.md)。其余需求不变，不能擅自改成两档、文字动画或实色层。时段模块可完成，但不是整个需求交付完成。
 
 ## 文件边界与依赖
 
@@ -67,7 +71,7 @@
 
 ```text
 可启用 = 用户已选择 && 单应用开启 && 位于当前授权额度 && 全局未暂停 && 当前保护时段有效
-可保护 = 可启用 && 所需权限有效 && 窗口/轮廓受支持 && 模糊引擎正常
+可保护 = 可启用 && 所需权限有效 && 窗口/完整覆盖受支持 && 模糊引擎正常
 需要模糊 = 可保护 && 目标应用不为前台 && 目标窗口当前可见
 ```
 
@@ -78,14 +82,14 @@
 - [ ] 将默认值和特殊语义标为本计划采用的实现规则；如用户改变这些规则，先修改需求与相应测试，不将新语义藏在代码里。
 - [ ] 对照 TASK 的 14 个 AC 与本计划最后的覆盖表；提交仅本任务文件：`docs: define protection schedule and rendering boundaries`。
 
-## Task 2: 真实轮廓、三档模糊和安全过渡 Gate
+## Task 2: 完整覆盖、三档模糊和安全过渡 Gate
 
 **Files:** Modify `Sources/Sensveil/MaterialOverlayCoordinator.swift`、`Sources/Sensveil/WindowTracker.swift`、`Sources/SensveilFixture/main.swift`、`docs/engineering/POC_RESULTS.md`、`docs/engineering/FEASIBILITY_SPIKE.md`（均以实验基目录为准；文档位于仓库 docs）。必要时条件新增 `Sources/Sensveil/WindowBlurRenderer.swift`，只有 Gate 批准后。
 
 **Interfaces:** 后续集成契约仍使用现有 `OverlayCoordinating`，新增方法见任务 8。实验结果必须明确选定的公开 API、支持的窗口类型、每个档位的真实参数、证据有效条件、失败原因，不写无法运行的“配置参数占位”。
 
 - [ ] 使用合成 fixture 和当前产品签名二进制重做 F-03 层级、F-04 一次点击/输入、F-05 材料强度。现有 UNMEASURED 不能当失败或通过。
-- [ ] 枚举普通圆角、直角、自绘、sheet、全屏；实测公开 API 能取得的轮廓信息。几何矩形不是轮廓；禁止固定半径匹配、私有 API、从窗口标题推断类型。输出无法识别时的失败闭环。
+- [ ] 按 2026-10-14 新需求，验证统一圆角外扩路径在普通圆角、直角、自绘、极小窗和屏幕边缘完整包含目标矩形；增加 1/2/3 倍及小数坐标的光栅覆盖检查。sheet、全屏的身份、层级和交互仍需独立验证。真实轮廓探针保留为历史研究，不再阻断统一圆角几何实施；不使用私有 API 或从标题推断类型。
 - [ ] 针对现有材料实验三档候选，逐档进行 12/24/48pt 合成内容可读性观察；材质外观差异不是 blur 差异，三档均需达到 PRD AC-05。
 - [ ] 若层级/输入通过而材料隐私强度失败，记录证据后进入已批准的 SCK 条件实验；若只是不能调三档但材料强度通过，先在 ADR/决策清单评审是否允许切换路径，不自行扩大屏幕采集用途。
 - [ ] 条件 SCK 实验使用按窗口过滤 + Core Image 模糊，只展示处理后的帧；复用唯一窗口身份、忽略 overlay 自身、缓存 CIContext 而非每帧创建、限制在飞帧和缓存生命周期，不保存像素。拒绝/撤销录屏权限明确失败，不把诊断授权视为自动批准内容采集。
@@ -97,7 +101,9 @@
 
 **Files:** Modify `ProtectionConfiguration.swift`、`SensveilController.swift`；Create `ProtectionSchedule.swift`（模型部分）；Modify `ProtectionConfigurationTests.swift`；相关开发说明随实现更新。
 
-**Interfaces:** `ProtectionConfiguration` 升到 schema 2，新增 `blurLevel: BlurLevel`、`showsProtectionLabel: Bool`、`schedule: ProtectionSchedule`。圆角自动匹配和固定动画不存伪开关。
+**Interfaces:** `ProtectionConfiguration` 升到 schema 2，新增 `blurLevel: BlurLevel`、`showsProtectionLabel: Bool`、`schedule: ProtectionSchedule`。统一圆角覆盖和固定动画不存开关。
+
+后续2026-10-14用户要求过渡四档：配置继续升级schema3，新增 `protectionTransition`（200/500/800ms/off），schema1/2默认200ms；保留既有迁移和失败事务。圆角仍无独立开关，过渡设置已成为当前需求。
 
 ```swift
 public enum BlurLevel: String, Codable, CaseIterable, Sendable {
@@ -255,7 +261,7 @@ Run: `swift test --package-path experiments/macos-blur-poc --filter WindowProtec
 
 **Interfaces:** `ProtectionSettingsView(controller: SensveilController)`；本地草稿独立于已保存配置，保存调用任务 3 的 `saveProtectionSettings`；实例身份以配置数据为准，不把行索引当可持久标识。
 
-- [ ] 模糊三档 Picker、守护文案 Toggle、全天/指定模式；轮廓展示验证状态，不提供“假匹配”调节；无动画开关或时长设置。
+- [ ] 模糊三档 Picker、守护文案 Toggle、全天/指定模式；展示圆角覆盖实际状态，不提供半径调节；过渡提供200/500/800ms/关闭四档。
 - [ ] 指定模式显示周一至周日，每天添加/删除 0～多个区间；开始/结束采用原生时间控件或明确 HH:mm 输入，跨午夜显示“次日”，结束 24:00 可明确选择；不能在控件里用固定任意日期推导本地时间。
 - [ ] 加入跟随开关、节假日与补班编辑器；显示当前本机时区、规则来源、是否处于时段及日历年份/版本。跟随关闭保留草稿，全天模式隐藏而不删除时段；警告不弹抢焦点窗口。
 - [ ] 保存前显示非法时刻、零长度区间错误；重叠合并后回显归一化结果；空周显式说明。取消丢弃草稿而非已保存配置；写失败保留草稿和旧运行态。
@@ -265,9 +271,19 @@ Run: `swift test --package-path experiments/macos-blur-poc --filter WindowProtec
 
 提交：`feat: add global protection settings and weekly interval editor`。
 
-## Task 8: 放行后的轮廓/模糊/文案/动画集成
+## Task 8: 圆角覆盖/模糊/文案/动画集成
 
-**Precondition:** 任务 2 的相关视觉 Gate 通过，Task 3 的设置已可读写。不能以 Gate 实验代码代替产品实现；失败分支必须能在真实产品运行。
+2026-10-14：此前真实轮廓前提未通过，见[复验记录](../../engineering/CONTOUR_ORDERING_VALIDATION.md)。用户随后批准 [ADR-002](../../architecture/ADR-002-expanded-rounded-overlay.md) 的统一圆角外扩方案，允许开始本任务的几何子项；不再以标准标题窗独立轮廓真值作为几何前提。模糊、文案、动画成功状态仍需任务 2 对应 Gate，不以需求调整自动放行。
+
+**Precondition:** 几何子项已获用户单独批准，可在现有产品材料请求上实现，不新增成功状态。其他视觉子项仍需任务 2 对应 Gate 通过，Task 3 的设置已可读写。失败分支必须能在真实产品运行。
+
+后续用户已验收圆角，明确授权继续档位与文案工程：按[接入范围](../../engineering/BLUR_LABEL_INTEGRATION.md)将历史三候选材料组合接入保存后下发，守护文案实现布局及状态门控。隐私成功证据仍缺失，不能把此次工程授权当模糊可读性通过；安全过渡不在本轮新增范围。
+
+本轮工程结果：保存后下发、三档材料组合更新及文案居中/适配/门控已实现，171 项测试通过，产品已安装。下方三档安全原子切换和成功保护文案任务仍不勾完成：实际强度/切档连续性、可信保护证据未通过，生产文案继续隐藏；安全过渡未新增。详细范围与新二进制权限状态见上述接入记录。
+
+后续用户明确验收修正后的模糊档位，允许继续文案；已完成本机验收profile的窗口证据签发/消费与居中文案显示，186项测试、合成真实panel自检16/16及安装通过，见[最新记录](../../engineering/BLUR_LABEL_INTEGRATION.md)。文案子项在限定profile完成，跨环境矩阵和安全动画任务仍未完成；不追溯宣称全Task8放行。
+
+用户随后验收文案并要求过渡：200ms动画工程已接入，192项测试和生产panel自检21/21通过；进入、前台退出、快速反转、减少动态效果与故障取消实现记录见[过渡验证](../../engineering/PROTECTION_TRANSITION_VALIDATION.md)。下方动画工程内容已实现，但中间帧可读性/平滑度/视觉时延仍未验收，因此不勾整项视觉通过。
 
 **Files:** Modify `MaterialOverlayCoordinator.swift`、`WindowProtectionCoordinator.swift`、`WindowTracker.swift`；条件修改 `WindowBlurRenderer.swift`、`PermissionCoordinator.swift`、`ManagementView.swift`；Modify `MaterialOverlayCoordinatorTests.swift` 和 `WindowProtectionCoordinatorTests.swift`。如改公开 PoCCore 类型，先用 LSP references 找所有产品/PoC/test 调用并一并迁移，无 shim。
 
@@ -290,16 +306,16 @@ struct OverlayProtectionEvidence: Equatable {
 // enum OverlayObservation 增加 case protected(OverlayProtectionEvidence)
 ```
 
-证据 revision 对应任务 2 验证的公开实现与支持组合；具体 OS/轮廓/DPI/层级/权限/生命周期条件在 renderer 内检查，构造入口只允许验证路径调用，不公开工厂“返回 true”。人工确认按钮不能成为生产证据。若任务 2 不能给出该契约的可信实现，本任务不开始。
+证据 revision 对应任务 2 验证的公开实现与支持组合；具体 OS/覆盖/DPI/层级/权限/生命周期条件在 renderer 内检查，构造入口只允许验证路径调用，不公开工厂“返回 true”。人工确认按钮不能成为生产证据。若任务 2 不能给出该契约的可信实现，本任务的成功保护、三档、文案和动画集成不开始。
 
-- [ ] 实装 Gate 选定的轮廓获取和剪裁 API；每个匹配窗口独立轮廓，几何/DPI/屏幕/全屏变化失效；未知轮廓 failure，不裁掉疑似内容。不以应用名称或 fixture 白名单伪造通用支持。
+- [x] 实装 `RoundedOverlayGeometry` 与统一圆弧 mask；分开目标 bounds 和实际外扩 bounds，以扩张区域检查夹层；移动/缩放/DPI/屏幕变化更新，未知几何 failure。1/2/3 倍及半像素偏移的光栅测试、真实 CG 外扩带冲突已验证；实际合成模糊隐私及跨屏支持仍需任务 2/9 实测。见[外扩验证](../../engineering/EXPANDED_OVERLAY_VALIDATION.md)。
 - [ ] 三个真实模糊参数映射复用已测结果；档位替换在新安全效果 ready 后原子切换，旧安全层不能预先清空。任何帧处理失败/权限变化/期限过期进入失败闭环，不能显示 raw frame。
 - [ ] 成功 observation 必须匹配 WindowKey/当前 bounds/所选档位和 validationRevision，否则当过期失败；`requestSubmitted` 仍不能产生已保护。混合结果统计 verified success 而不是请求数量；实际成功窗口与失败窗口并存。
 - [ ] 每个成功窗口中心加入不可交互文字视图；不激活、不截输入。用实际文字布局尺寸判断能否完整放入，否则隐藏文字而保留模糊；浅/深色和对比度符合可读性。守护文案关闭只刷新 label，不撤模糊。
-- [ ] 整体过渡采用已验证安全起始模糊到目标效果，固定 200ms；聚焦/暂停/时段结束可撤销过渡，权限失败、几何改变、退出必须立即中止并清理；系统减少动态效果直接取最终状态。
+- [ ] 整体过渡从完整模糊到目标效果，200/500/800ms/关闭可选；保存取消旧动画，聚焦可淡出，暂停/时段结束、权限失败、几何改变和未知焦点立即中止清理；系统减少动态效果直接取最终状态。工程已实现，四档真实中间帧验收仍待补齐。
 - [ ] 动画 completion 使用窗口身份/操作世代，迟到回调不得删除新层、重建旧层或显示旧文字；原有非激活、点击穿透、相对层级检查保留。
 - [ ] 增加一个快速反转回归及一个过期证据拒绝回归，覆盖 consumer-visible 错误；现有只验证字面文案、英文错误 substring 的测试删除，不重新钉住新措辞。已测试的焦点/未知状态约束保留。
-- [ ] 真实 app 验证多窗口中心文案、三档、调整档位不暴露原文、每秒多次焦点切换、移动缩放、不支持轮廓、前台无层、部分失败、设置保存失败不改变窗口效果。
+- [ ] 真实 app 验证多窗口中心文案、三档、调整档位不暴露原文、每秒多次焦点切换、移动缩放、无效覆盖几何、前台无层、部分失败、设置保存失败不改变窗口效果。
 
 Run: `swift test --package-path experiments/macos-blur-poc --filter MaterialOverlayCoordinatorTests` 及 `--filter WindowProtectionCoordinatorTests`；真实 GUI smoke 是必要条件，fake panel 单测不能证明模糊。提交：`feat: render verified window contours and safe blur transitions`。
 
@@ -337,7 +353,7 @@ codesign --verify --strict experiments/macos-blur-poc/.build/apps/Sensveil.app
 | TASK 验收 | 实现任务 | 必需证据 |
 | --- | --- | --- |
 | AC-01 全局设置 | 3、7、8、9 | 配置重载/迁移 + 两应用实际生效 |
-| AC-02 轮廓 | 2、8、9 | 真实窗口、DPI、直角/圆角、异常闭环 |
+| AC-02 完整覆盖 | 2、8、9 | 外扩包含、DPI、直角/圆角、扩大区域冲突与异常闭环 |
 | AC-03 三档 | 2、8、9 | 三档真实模糊 + 三人不可辨读评估 |
 | AC-04 文案 | 7、8、9 | 每窗口中心、隐藏条件、关闭不撤层 |
 | AC-05 动画 | 2、8、9 | 安全起点、时间测量、反转及几何失效 |
@@ -351,4 +367,4 @@ codesign --verify --strict experiments/macos-blur-poc/.build/apps/Sensveil.app
 | AC-13 跨日跨年 | 5、6、9 | 开始日语义、本地时区、DST/缺年 |
 | AC-14 离线保留 | 3、4、7、9 | 离线安装资源、重启/升级不重置 |
 
-完成必须满足：所有设置可用而非 disabled 壳；内置数据在安装产品可读；边界在管理页关闭时仍触发；所有目标窗口使用已验证真实模糊及轮廓；无未经验证的成功状态；TASK 14 项和 PRD 隐私/延迟门槛都有观察证据。技术能力不成立时输出阻断事实与产品裁决点，不能将其替换成更容易的需求。
+完成必须满足：所有设置可用而非 disabled 壳；内置数据在安装产品可读；边界在管理页关闭时仍触发；所有目标窗口使用已验证真实模糊和完整包围覆盖；无未经验证的成功状态；TASK 14 项和 PRD 隐私/延迟门槛都有观察证据。技术能力不成立时输出阻断事实与产品裁决点，不自行改变其余需求。

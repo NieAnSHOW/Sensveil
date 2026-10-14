@@ -8,11 +8,13 @@ public final class SensveilController: ObservableObject {
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var configurationLoadFailed = false
     @Published public private(set) var availableApplications: [ApplicationDescriptor] = []
+    @Published public private(set) var isLoadingApplications = false
     public var isConfigurationReadOnly: Bool { configurationLoadFailed }
 
     public let catalog: ApplicationCatalog
     public let configurationStore: ConfigurationStore
     public let protectionCoordinator: WindowProtectionCoordinator
+    private var applicationRefreshTask: Task<Void, Never>?
 
     public init(configurationStore: ConfigurationStore = ConfigurationStore(), catalog: ApplicationCatalog = ApplicationCatalog(), protectionCoordinator: WindowProtectionCoordinator = WindowProtectionCoordinator()) {
         self.configurationStore = configurationStore
@@ -31,6 +33,7 @@ public final class SensveilController: ObservableObject {
     }
 
     deinit {
+        applicationRefreshTask?.cancel()
         let coordinator = protectionCoordinator
         Task { @MainActor in coordinator.stop() }
     }
@@ -68,7 +71,18 @@ public final class SensveilController: ObservableObject {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return availableApplications.filter { query.isEmpty || $0.displayName.localizedCaseInsensitiveContains(query) || $0.bundleIdentifier.localizedCaseInsensitiveContains(query) }
     }
-    public func refreshApplications() { availableApplications = catalog.list() }
+    public func refreshApplications() {
+        guard applicationRefreshTask == nil else { return }
+        isLoadingApplications = true
+        let catalog = catalog
+        applicationRefreshTask = Task { [weak self] in
+            let applications = await catalog.list()
+            guard !Task.isCancelled, let self else { return }
+            self.availableApplications = applications
+            self.isLoadingApplications = false
+            self.applicationRefreshTask = nil
+        }
+    }
     public var canAddApplication: Bool { !configurationLoadFailed && configuration.applications.count < ConfigurationStore.freeApplicationLimit }
     public var freeLimitMessage: String { "免费版最多配置 \(ConfigurationStore.freeApplicationLimit) 个应用" }
     public var pauseActionTitle: String { configuration.isGloballyPaused ? "恢复保护" : "暂停保护" }
@@ -84,7 +98,12 @@ public final class SensveilController: ObservableObject {
     /// Persists the global protection settings and publishes them only after
     /// the store accepted the write, so a failed save leaves the running
     /// configuration untouched.
-    public func saveProtectionSettings(blurLevel: BlurLevel, showsProtectionLabel: Bool, schedule: ProtectionSchedule) throws {
+    public func saveProtectionSettings(
+        blurLevel: BlurLevel,
+        showsProtectionLabel: Bool,
+        schedule: ProtectionSchedule,
+        protectionTransition: ProtectionTransition? = nil
+    ) throws {
         guard !configurationLoadFailed else { throw ConfigurationError.readFailed }
         var updated = configuration
         do {
@@ -95,6 +114,9 @@ public final class SensveilController: ObservableObject {
         }
         updated.blurLevel = blurLevel
         updated.showsProtectionLabel = showsProtectionLabel
+        if let protectionTransition {
+            updated.protectionTransition = protectionTransition
+        }
         do {
             try configurationStore.save(updated)
         } catch {
