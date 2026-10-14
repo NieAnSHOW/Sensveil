@@ -83,8 +83,7 @@ public final class SensveilController: ObservableObject {
             self.applicationRefreshTask = nil
         }
     }
-    public var canAddApplication: Bool { !configurationLoadFailed && configuration.applications.count < ConfigurationStore.freeApplicationLimit }
-    public var freeLimitMessage: String { "免费版最多配置 \(ConfigurationStore.freeApplicationLimit) 个应用" }
+    public var canAddApplication: Bool { !configurationLoadFailed }
     public var pauseActionTitle: String { configuration.isGloballyPaused ? "恢复保护" : "暂停保护" }
 
     public func performMenuAction(_ action: SensveilMenuAction, openManagement: () -> Void, quit: () -> Void) {
@@ -162,7 +161,7 @@ public final class SensveilController: ObservableObject {
             protectionCoordinator.setConfiguration(updated)
             errorMessage = nil
         } catch {
-            errorMessage = error as? ConfigurationError == .freeLimitReached ? freeLimitMessage : "无法保存配置，请检查应用标识和本地文件的访问权限。"
+            errorMessage = "无法保存配置，请检查应用标识和本地文件的访问权限。"
         }
     }
 

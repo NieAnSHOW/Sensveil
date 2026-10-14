@@ -19,7 +19,7 @@ else
 fi
 mkdir -p "$apps_path"
 iconset_path="$experiment_root/.build/Sensveil.iconset"
-swift "$experiment_root/scripts/build-icon.swift" "$iconset_path"
+swift "$experiment_root/scripts/build-icon.swift" "$experiment_root/Resources/base-logo.png" "$iconset_path"
 iconutil --convert icns --output "$experiment_root/.build/Sensveil.icns" "$iconset_path"
 
 for name in Sensveil SensveilPoC SensveilFixture; do

@@ -644,17 +644,54 @@ final class WindowProtectionCoordinatorTests: XCTestCase {
         }
     }
 
-    func testOverFreeLimitConfigurationNeverAttemptsProtection() {
-        let instance = ProcessInstance(pid: 100, generation: 1)
-        let runtime = configuredRuntime(instance: instance)
+    func testAddingApplicationsBeyondTwoPreservesProtectionAndActualWindowStates() throws {
+        let verified = ProcessInstance(pid: 100, generation: 1)
+        let unverified = ProcessInstance(pid: 101, generation: 1)
+        let foreground = ProcessInstance(pid: 102, generation: 1)
+        let disabled = ProcessInstance(pid: 103, generation: 1)
+        let runtime = configuredRuntime(instance: verified)
+        let second = ProtectedApplication(bundleIdentifier: "com.example.second", displayName: "Second")
+        let third = ProtectedApplication(bundleIdentifier: "com.example.third", displayName: "Third")
+        let fourth = ProtectedApplication(bundleIdentifier: "com.example.fourth", displayName: "Fourth", isEnabled: false)
+        let fifth = ProtectedApplication(bundleIdentifier: "com.example.fifth", displayName: "Fifth")
+        for (app, instance) in [(second, unverified), (third, foreground), (fourth, disabled)] {
+            runtime.instances[app.bundleIdentifier] = [instance]
+            runtime.snapshots[instance] = snapshot(instance, windows: [candidate(instance, id: 1)])
+        }
+        runtime.frontmost = foreground
+        let verifiedWindow = candidate(verified, id: 1)
+        let unverifiedWindow = candidate(unverified, id: 1)
+        runtime.observationResult = { intents, _ in
+            var result: [WindowKey: OverlayObservation] = [:]
+            if intents[verifiedWindow.key] == .attemptBlur {
+                result[verifiedWindow.key] = self.acceptedObservation(for: verifiedWindow)
+            }
+            if intents[unverifiedWindow.key] == .attemptBlur {
+                result[unverifiedWindow.key] = .requestSubmitted
+            }
+            return result
+        }
         let coordinator = WindowProtectionCoordinator(runtime: runtime)
-        let apps = [application(), ProtectedApplication(bundleIdentifier: "com.example.second", displayName: "Second"), ProtectedApplication(bundleIdentifier: "com.example.third", displayName: "Third")]
+        defer { coordinator.stop() }
+        coordinator.start(configuration: ProtectionConfiguration(applications: [application(), second]))
+        let previousRemovals = runtime.removeAllCount
 
-        coordinator.start(configuration: ProtectionConfiguration(applications: apps))
+        coordinator.setConfiguration(ProtectionConfiguration(applications: [application(), second, third, fourth, fifth]))
 
-        XCTAssertTrue(apps.allSatisfy { coordinator.status(for: $0) == .overFreeLimit })
-        XCTAssertFalse(runtime.reconciles.contains { $0.0.values.contains(.attemptBlur) })
-        XCTAssertGreaterThan(runtime.removeAllCount, 0)
+        let intents = try XCTUnwrap(runtime.reconciles.last?.0)
+        XCTAssertEqual(intents[verifiedWindow.key], .attemptBlur)
+        XCTAssertEqual(intents[unverifiedWindow.key], .attemptBlur)
+        XCTAssertEqual(intents[candidate(foreground, id: 1).key], .remove)
+        XCTAssertNil(intents[candidate(disabled, id: 1).key])
+        XCTAssertEqual(runtime.removeAllCount, previousRemovals)
+        XCTAssertEqual(coordinator.status(for: bundleID), .protected)
+        guard case .cannotProtect(let reason) = coordinator.status(for: second) else {
+            return XCTFail("A submitted material request must stay unverified regardless of application count")
+        }
+        XCTAssertTrue(reason.contains("unverified"))
+        XCTAssertEqual(coordinator.status(for: third), .foreground)
+        XCTAssertEqual(coordinator.status(for: fourth), .disabled)
+        XCTAssertEqual(coordinator.status(for: fifth), .notRunning)
     }
 
     func testProductionRuntimeReconcilesTrackerUpdatesWithoutStartupRecursion() async throws {

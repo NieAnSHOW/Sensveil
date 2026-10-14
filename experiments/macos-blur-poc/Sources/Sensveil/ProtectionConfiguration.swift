@@ -1,7 +1,6 @@
 import Foundation
 
 public enum ConfigurationError: Error, Equatable, Sendable {
-    case freeLimitReached
     case invalidBundleIdentifier
     case unsupportedSchema
     case readFailed
@@ -160,11 +159,9 @@ public struct ProtectionConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-/// Persistence and free-tier policy for the local protection configuration.
+/// Persistence and validation for the local protection configuration.
 @MainActor
 public final class ConfigurationStore {
-    public static let freeApplicationLimit = 2
-
     public let configURL: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
@@ -204,8 +201,7 @@ public final class ConfigurationStore {
 
         do {
             var configuration = try decoder.decode(ProtectionConfiguration.self, from: data)
-            // Older files may contain duplicate entries. Keep the first one,
-            // then make the in-memory representation conform to the quota.
+            // Older files may contain duplicate entries. Keep the first one.
             configuration.applications = deduplicated(configuration.applications)
             return configuration
         } catch let error as ConfigurationError {
@@ -263,7 +259,7 @@ public final class ConfigurationStore {
     }
 
     /// Adds an application to a caller-owned configuration. Duplicate bundle
-    /// identifiers are idempotent and do not consume another free slot.
+    /// identifiers are idempotent and preserve the original entry.
     public func add(_ application: ProtectedApplication, to configuration: inout ProtectionConfiguration) throws {
         guard Self.isValidBundleIdentifier(application.bundleIdentifier) else {
             throw ConfigurationError.invalidBundleIdentifier
@@ -272,9 +268,6 @@ public final class ConfigurationStore {
         configuration.applications = deduplicated(configuration.applications)
         guard !configuration.applications.contains(where: { $0.bundleIdentifier == application.bundleIdentifier }) else {
             return
-        }
-        guard configuration.applications.count < Self.freeApplicationLimit else {
-            throw ConfigurationError.freeLimitReached
         }
         configuration.applications.append(application)
     }

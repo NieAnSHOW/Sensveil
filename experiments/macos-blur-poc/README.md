@@ -2,6 +2,12 @@
 
 This isolated Swift 6 experiment targets macOS 14 or later. It has no third-party dependencies. `PoCCore` contains deterministic window matching and protection intent logic. `SensveilPoC` is the diagnostic application; `SensveilFixture` is a separate foreground application containing synthetic data only.
 
+## Current product baseline (2026-10-14)
+
+Sensveil is fully free with no configured-app limit, trial clock, purchase, activation or device binding. Core protection and configuration run offline; old commercial state does not affect app selection or protection. Historical quota/trial/license checks in older plans and reports are obsolete. This usage policy does not change the repository's copyright license.
+
+The native macOS management window uses a sidebar and detail pages: 防窥应用, 保护效果, 保护时段, 权限, 通用 and 关于. Login launch remains explicitly unimplemented; transition selection remains hidden. About reads the marketing version and build number from `Bundle.main` (currently `0.1.0 (1)`) and offers the [project](https://github.com/NieAnSHOW/Sensveil) and [author](https://github.com/NieAnSHOW) links, opened only on a user click. Current requirements are in [TASK](../../TASK.md); the historical validation records below do not certify this UI change.
+
 ## Build
 
 From the repository root:

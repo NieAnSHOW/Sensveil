@@ -65,6 +65,77 @@ struct ProtectionSettingsDraft: Equatable {
     }
 }
 
+/// Shared by both settings pages so navigation does not discard unfinished edits.
+@MainActor
+final class ProtectionSettingsSession: ObservableObject {
+    @Published var scheduleDraft: ProtectionSettingsDraft
+    @Published var blurLevel: BlurLevel
+    @Published var showsLabel: Bool
+    @Published var transition: ProtectionTransition
+    @Published var effectsError: String?
+    @Published var scheduleError: String?
+
+    init(configuration: ProtectionConfiguration) {
+        scheduleDraft = ProtectionSettingsDraft(schedule: configuration.schedule)
+        blurLevel = configuration.blurLevel
+        showsLabel = configuration.showsProtectionLabel
+        transition = configuration.protectionTransition
+    }
+
+    func hasEffectChanges(comparedTo configuration: ProtectionConfiguration) -> Bool {
+        blurLevel != configuration.blurLevel || showsLabel != configuration.showsProtectionLabel
+            || (ProtectionTransition.isUserSelectable && transition != configuration.protectionTransition)
+    }
+
+    func hasScheduleChanges(comparedTo configuration: ProtectionConfiguration) -> Bool {
+        scheduleDraft.scheduleValue != configuration.schedule
+            || scheduleDraft.selectedWeekdays != Set(configuration.schedule.weeklyRanges.indices.filter {
+                !configuration.schedule.weeklyRanges[$0].isEmpty
+            })
+    }
+
+    func discardEffects(configuration: ProtectionConfiguration) {
+        blurLevel = configuration.blurLevel
+        showsLabel = configuration.showsProtectionLabel
+        transition = configuration.protectionTransition
+        effectsError = nil
+    }
+
+    func discardSchedule(configuration: ProtectionConfiguration) {
+        scheduleDraft = ProtectionSettingsDraft(schedule: configuration.schedule)
+        scheduleError = nil
+    }
+
+    func saveEffects(controller: SensveilController) {
+        do {
+            // Read the current other page's values at save time, never its draft.
+            try controller.saveProtectionSettings(
+                blurLevel: blurLevel, showsProtectionLabel: showsLabel,
+                schedule: controller.configuration.schedule,
+                protectionTransition: ProtectionTransition.isUserSelectable ? transition : nil)
+            discardEffects(configuration: controller.configuration)
+        } catch {
+            effectsError = controller.errorMessage ?? "无法保存保护效果，请重试。"
+        }
+    }
+
+    func saveSchedule(controller: SensveilController) {
+        do {
+            try controller.saveProtectionSettings(
+                blurLevel: controller.configuration.blurLevel,
+                showsProtectionLabel: controller.configuration.showsProtectionLabel,
+                schedule: scheduleDraft.scheduleValue)
+            discardSchedule(configuration: controller.configuration)
+        } catch {
+            scheduleError = controller.errorMessage ?? "无法保存设置，请检查时段是否有效。"
+        }
+    }
+}
+
+enum ProtectionSettingsPage {
+    case effects, schedule
+}
+
 public struct ProtectionSettingsView: View {
     private static let weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     private static let minuteFormatter: DateFormatter = {
@@ -74,74 +145,113 @@ public struct ProtectionSettingsView: View {
     }()
 
     @ObservedObject private var controller: SensveilController
-    @State private var draft: ProtectionSettingsDraft
-    @State private var draftBlurLevel: BlurLevel
-    @State private var draftShowsLabel: Bool
-    @State private var draftTransition: ProtectionTransition
-    @State private var saveError: String?
+    @StateObject private var session: ProtectionSettingsSession
+    private let page: ProtectionSettingsPage
 
     public init(controller: SensveilController) {
+        self.init(controller: controller,
+                  session: ProtectionSettingsSession(configuration: controller.configuration), page: .effects)
+    }
+
+    init(controller: SensveilController, session: ProtectionSettingsSession, page: ProtectionSettingsPage) {
         self.controller = controller
-        _draft = State(initialValue: ProtectionSettingsDraft(schedule: controller.configuration.schedule))
-        _draftBlurLevel = State(initialValue: controller.configuration.blurLevel)
-        _draftShowsLabel = State(initialValue: controller.configuration.showsProtectionLabel)
-        _draftTransition = State(initialValue: controller.configuration.protectionTransition)
+        _session = StateObject(wrappedValue: session)
+        self.page = page
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("模糊档位", selection: $draftBlurLevel) {
-                Text("标准").tag(BlurLevel.standard)
-                Text("增强").tag(BlurLevel.enhanced)
-                Text("最强").tag(BlurLevel.strongest)
-            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("模糊档位")
+        Form {
+            if page == .effects {
+                effectsEditor
+            } else {
+                Section("保护模式") {
+                    Picker("保护时段", selection: $session.scheduleDraft.mode) {
+                        Text("全天保护").tag(ProtectionScheduleMode.allDay)
+                        Text("指定时段").tag(ProtectionScheduleMode.specified)
+                    }.pickerStyle(.radioGroup).accessibilityLabel("保护时段模式")
+                }
+                if session.scheduleDraft.mode == .specified {
+                    Section("每周安排") { scheduleEditor }
+                    Section { holidayEditor }
+                    if session.scheduleDraft.weeklyRanges.allSatisfy(\.isEmpty) {
+                        Section {
+                            Label("指定时段为空，保存后不会保护任何应用。", systemImage: "moon.zzz")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section("当前状态（已保存的设置）") { evaluationSummary }
+            }
+        }
+        .formStyle(.grouped)
+        .disabled(controller.isConfigurationReadOnly)
+        .safeAreaInset(edge: .bottom, spacing: 0) { saveBar }
+    }
 
+    private var effectsEditor: some View {
+        Group {
+            Section {
+                Picker("模糊强度", selection: $session.blurLevel) {
+                    Text("标准").tag(BlurLevel.standard)
+                    Text("增强").tag(BlurLevel.enhanced)
+                    Text("最强").tag(BlurLevel.strongest)
+                }.pickerStyle(.segmented)
+                Text("保存后应用于受保护窗口。圆角采用外扩覆盖，当前支持本机单显示器普通窗口。")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: { Text("模糊效果") }
+            Section {
+                Toggle("显示守护文案", isOn: $session.showsLabel)
+                Text("在受支持窗口确认保护后，显示“Sensveil 守护中”。")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: { Text("守护提示") }
             if ProtectionTransition.isUserSelectable {
-                HStack {
-                    Text("过渡动画")
-                    Picker("过渡动画", selection: $draftTransition) {
+                Section("过渡动画") {
+                    Picker("动画时长", selection: $session.transition) {
                         Text("200ms").tag(ProtectionTransition.ms200)
                         Text("500ms").tag(ProtectionTransition.ms500)
                         Text("800ms").tag(ProtectionTransition.ms800)
                         Text("关闭动画").tag(ProtectionTransition.off)
-                    }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("过渡动画")
+                    }.pickerStyle(.segmented)
                 }
-            }
-
-            Toggle("显示守护文案（Sensveil 守护中）", isOn: $draftShowsLabel)
-            Text("模糊档位保存后应用于窗口。守护文案在受支持窗口确认保护后显示。")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("圆角采用外扩覆盖。当前支持本机单显示器普通窗口。")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Picker("保护时段", selection: $draft.mode) {
-                Text("全天保护").tag(ProtectionScheduleMode.allDay)
-                Text("指定时段").tag(ProtectionScheduleMode.specified)
-            }.pickerStyle(.radioGroup).accessibilityLabel("保护时段模式")
-
-            if draft.mode == .specified {
-                scheduleEditor
-                holidayEditor
-                if draft.weeklyRanges.allSatisfy(\.isEmpty) {
-                    Label("指定时段为空，当前不会保护", systemImage: "moon.zzz")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            evaluationSummary
-
-            HStack {
-                Button("保存设置") { save() }.disabled(controller.isConfigurationReadOnly)
-                Button("放弃修改") { discardDraft() }.disabled(!hasChanges)
-                Spacer()
-            }
-            if let saveError {
-                Label(saveError, systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var hasChanges: Bool {
+        page == .effects ? session.hasEffectChanges(comparedTo: controller.configuration)
+            : session.hasScheduleChanges(comparedTo: controller.configuration)
+    }
+
+    private var saveBar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            if let error = page == .effects ? session.effectsError : session.scheduleError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+            }
+            HStack {
+                Text(hasChanges ? "有未保存的修改" : "设置已保存")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("放弃修改") {
+                    if page == .effects { session.discardEffects(configuration: controller.configuration) }
+                    else { session.discardSchedule(configuration: controller.configuration) }
+                }.disabled(!hasChanges)
+                Button("保存设置") {
+                    if page == .effects { session.saveEffects(controller: controller) }
+                    else { session.saveSchedule(controller: controller) }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!hasChanges || controller.isConfigurationReadOnly)
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 16)
+        }.background(.regularMaterial)
     }
 
     // MARK: - Schedule editor
@@ -149,8 +259,8 @@ public struct ProtectionSettingsView: View {
     @ViewBuilder
     private var scheduleEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("每周日期（可多选）").font(.callout)
-            HStack(spacing: 12) {
+            Text("每周日期（可多选）").font(.headline)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), alignment: .leading)], alignment: .leading, spacing: 12) {
                 ForEach(0..<7, id: \.self) { index in
                     Toggle(Self.weekdayLabels[index], isOn: weekdayBinding(index))
                         .toggleStyle(.checkbox)
@@ -160,19 +270,19 @@ public struct ProtectionSettingsView: View {
             Text("逐一设置所选日期；取消选择会清空该日时段，保存后生效。")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(draft.selectedWeekdays.sorted(), id: \.self) { index in
+            ForEach(session.scheduleDraft.selectedWeekdays.sorted(), id: \.self) { index in
                 VStack(alignment: .leading, spacing: 6) {
                     Divider()
                     HStack {
                         Text(Self.weekdayLabels[index]).font(.headline)
-                        Text(daySummary(draft.weeklyRanges[index]))
+                        Text(daySummary(session.scheduleDraft.weeklyRanges[index]))
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach($draft.weeklyRanges[index]) { $row in
+                    ForEach($session.scheduleDraft.weeklyRanges[index]) { $row in
                         rangeRow($row)
                     }
                     Button {
-                        draft.weeklyRanges[index].append(newRow(after: draft.weeklyRanges[index].last))
+                        session.scheduleDraft.weeklyRanges[index].append(newRow(after: session.scheduleDraft.weeklyRanges[index].last))
                     } label: { Label("添加时段", systemImage: "plus") }
                     .accessibilityLabel("为\(Self.weekdayLabels[index])添加时段")
                 }
@@ -183,10 +293,10 @@ public struct ProtectionSettingsView: View {
     @ViewBuilder
     private var holidayEditor: some View {
         DisclosureGroup("节假日") {
-            Toggle("跟随中国大陆法定节假日安排", isOn: $draft.followsMainlandHolidays)
-            if draft.followsMainlandHolidays {
-                rangeList($draft.holidayRanges, title: "节假日与调休休息时段")
-                rangeList($draft.makeupWorkdayRanges, title: "调休上班时段")
+            Toggle("跟随中国大陆法定节假日安排", isOn: $session.scheduleDraft.followsMainlandHolidays)
+            if session.scheduleDraft.followsMainlandHolidays {
+                rangeList($session.scheduleDraft.holidayRanges, title: "节假日与调休休息时段")
+                rangeList($session.scheduleDraft.makeupWorkdayRanges, title: "调休上班时段")
             }
             Text("内置日历：\(controller.holidayCoverageDescription)").font(.caption).foregroundStyle(.secondary)
         }
@@ -214,7 +324,7 @@ public struct ProtectionSettingsView: View {
                 .labelsHidden().fixedSize().accessibilityLabel("结束时间")
             Text(endDisplay(row.wrappedValue))
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                .frame(width: 44, alignment: .leading)
+                .frame(minWidth: 76, alignment: .leading)
                 .accessibilityLabel("结束说明 \(endAccessibility(row.wrappedValue))")
             Spacer()
             Button {
@@ -244,49 +354,11 @@ public struct ProtectionSettingsView: View {
         }
     }
 
-    // MARK: - Editing helpers
-
-    private var hasChanges: Bool {
-        // Compare schedule values, not draft structs: row identity UUIDs are
-        // regenerated on every conversion and must not mark the draft dirty.
-        draft.scheduleValue != controller.configuration.schedule
-            || draft.selectedWeekdays != Set(controller.configuration.schedule.weeklyRanges.indices.filter {
-                !controller.configuration.schedule.weeklyRanges[$0].isEmpty
-            })
-            || draftBlurLevel != controller.configuration.blurLevel
-            || draftShowsLabel != controller.configuration.showsProtectionLabel
-            || (ProtectionTransition.isUserSelectable
-                && draftTransition != controller.configuration.protectionTransition)
-    }
-
-    private func discardDraft() {
-        draft = ProtectionSettingsDraft(schedule: controller.configuration.schedule)
-        draftBlurLevel = controller.configuration.blurLevel
-        draftShowsLabel = controller.configuration.showsProtectionLabel
-        draftTransition = controller.configuration.protectionTransition
-        saveError = nil
-    }
-
     private func weekdayBinding(_ index: Int) -> Binding<Bool> {
         Binding(
-            get: { draft.selectedWeekdays.contains(index) },
-            set: { draft.setWeekday(index, selected: $0) }
+            get: { session.scheduleDraft.selectedWeekdays.contains(index) },
+            set: { session.scheduleDraft.setWeekday(index, selected: $0) }
         )
-    }
-
-    private func save() {
-        do {
-            try controller.saveProtectionSettings(
-                blurLevel: draftBlurLevel,
-                showsProtectionLabel: draftShowsLabel,
-                schedule: draft.scheduleValue,
-                protectionTransition: ProtectionTransition.isUserSelectable ? draftTransition : nil)
-            saveError = nil
-            // Echo the persisted (normalized, merged) configuration back.
-            draft = ProtectionSettingsDraft(schedule: controller.configuration.schedule)
-        } catch {
-            saveError = controller.errorMessage ?? "无法保存设置，请检查时段是否有效。"
-        }
     }
 
     private func daySummary(_ rows: [ProtectionRangeDraft]) -> String {
@@ -304,9 +376,9 @@ public struct ProtectionSettingsView: View {
     }
 
     private func removeRow(_ row: ProtectionRangeDraft) {
-        draft.weeklyRanges = draft.weeklyRanges.map { $0.filter { $0.id != row.id } }
-        draft.holidayRanges.removeAll { $0.id == row.id }
-        draft.makeupWorkdayRanges.removeAll { $0.id == row.id }
+        session.scheduleDraft.weeklyRanges = session.scheduleDraft.weeklyRanges.map { $0.filter { $0.id != row.id } }
+        session.scheduleDraft.holidayRanges.removeAll { $0.id == row.id }
+        session.scheduleDraft.makeupWorkdayRanges.removeAll { $0.id == row.id }
     }
 
     /// Only the wallclock HH:mm is edited; the stored value is the minute

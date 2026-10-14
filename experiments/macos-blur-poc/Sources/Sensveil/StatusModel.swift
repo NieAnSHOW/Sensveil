@@ -8,7 +8,6 @@ public enum ProtectionStatus: Equatable, Sendable {
     case protected
     case partialFailure([String])
     case cannotProtect(String)
-    case overFreeLimit
     case paused
     case disabled
     case outsideSchedule

@@ -1,14 +1,14 @@
 # Sensveil 技术选型
 
-日期：2026-10-11 · 状态：原生 macOS 路线建议；模糊引擎须经 PoC 才固化
+日期：2026-10-14 · 状态：原生 macOS 产品实现与免费使用基线；支持矩阵仍需验证
 
 ## 1. 决策摘要
 
-一期采用 **Swift 6 + SwiftUI + AppKit**。SwiftUI 承载管理与授权界面，AppKit 管理菜单栏、非激活覆盖窗口和系统生命周期；ApplicationServices Accessibility 跟踪外部窗口，NSWorkspace 观察应用级焦点。
+一期采用 **Swift 6 + SwiftUI + AppKit**。SwiftUI 承载分栏管理界面，AppKit 管理菜单栏、非激活覆盖窗口和系统生命周期；ApplicationServices Accessibility 跟踪外部窗口，NSWorkspace 观察应用级焦点。
 
 模糊渲染有两个候选：先验证无需主动采集像素的 `NSVisualEffectView.behindWindow`；若隐私强度不满足，再验证 `ScreenCaptureKit + Core Image` 按窗口捕获并模糊。**用户不接受不透明遮罩替代模糊。** 两条路线都不能可靠满足时，明确无法保护，回到产品评审。
 
-macOS 14、Apple Silicon 与 Intel 为建议支持基线，尚无真机证据。Windows 一期不实现；未来复用许可协议、权益规则和测试用例，窗口引擎按平台独立实现。
+macOS 14、Apple Silicon 与 Intel 为建议支持基线，尚无真机证据。Windows 一期不实现；未来可复用配置语义与测试用例，窗口引擎按平台独立实现。
 
 ## 2. 框架比较
 
@@ -28,30 +28,25 @@ macOS 14、Apple Silicon 与 Intel 为建议支持基线，尚无真机证据。
 ```mermaid
 flowchart LR
     UI[SwiftUI 管理界面] --> Config[本地应用配置]
-    Rights[试用与离线许可] --> Policy[保护状态机]
-    Config --> Policy
+    Config --> Policy[保护状态机]
     Focus[NSWorkspace 前台事件] --> Policy
     Track[AX 窗口事件与枚举校准] --> Policy
     Policy --> Overlay[AppKit 非激活覆盖层]
     Blur[材料模糊或 SCK + Core Image] --> Overlay
     Overlay --> Status[保护确认与异常状态]
     Status --> UI
-    Activate[用户发起联网激活] --> Service[Workers + D1]
-    Service --> Rights
 ```
 
 | 模块 | 职责 | 不承担的职责 |
 | --- | --- | --- |
-| AppCatalog/Configuration | bundle ID、名称图标、选择与持久化 | 判断许可签名或采集屏幕 |
+| AppCatalog/Configuration | bundle ID、名称图标、选择与持久化 | 采集屏幕 |
 | FocusMonitor | 发布当前前台 PID/归属与变化事件 | 操作覆盖层 |
-| WindowTracker | 窗口归属、几何、可见性和生命周期 | UI 和计费 |
-| ProtectionPolicy | 结合配置、焦点、额度、权限计算期望状态 | 直接调用窗口 API |
-| BlurRenderer/OverlayCoordinator | 真实模糊、覆盖层位置/层级/撤销和结果确认 | 签发许可或变更权益 |
+| WindowTracker | 窗口归属、几何、可见性和生命周期 | UI |
+| ProtectionPolicy | 结合配置、焦点、时段、权限计算期望状态 | 直接调用窗口 API |
+| BlurRenderer/OverlayCoordinator | 真实模糊、覆盖层位置/层级/撤销和结果确认 | 修改用户配置 |
 | PermissionCoordinator | 检测所需权限、引导与恢复 | 自动承诺权限已授予 |
-| EntitlementStore | 免费、试用与签名凭证验签，发布有效额度 | 依赖每次在线服务确认 |
-| ActivationClient/Service | 用户触发激活、设备绑定及签发 | 收集应用列表或窗口内容 |
 
-这些是逻辑边界，尚未创建同名类。实现时以 PoC 结果细化接口，不为每个名词提前建立空文件。UI/覆盖操作在主线程执行，窗口跟踪、捕获回调与权益更新采用明确并发隔离；具体 actor 接口在实施设计中定义。
+以上是职责边界示意，不保证与当前类名一一对应；已有 SwiftPM 实现位于 `experiments/macos-blur-poc/`，以实现和验证记录为准。UI/覆盖操作在主线程执行，窗口跟踪、捕获回调与配置更新采用明确并发隔离；具体 actor 接口在实施设计中定义。
 
 ## 4. 系统 API 与约束
 
@@ -92,21 +87,19 @@ ScreenCaptureKit 自 macOS 12.3 起提供，但较新 API 有各自 availability
 - 材料模糊候选若通过，不额外申请无用途的录屏权限。
 - 禁止私有 CGS 窗口管理 API。Mac App Store 沙盒/审核兼容性未研究通过，因此一期选择独立分发。
 - 发行使用 Developer ID、Hardened Runtime、Apple 公证及 DMG。稳定 bundle ID/签名身份关系到权限归属，测试签名环境不能代替发布权限测试。
-- 只在用户主动检查时访问更新信息；Sparkle 自动更新列为后续选项，首期不增加额外框架。
+- 版本来自 `Bundle.main`，当前 `0.1.0 (1)`；项目及作者链接由用户主动打开，不在后台请求。更新检查尚未建立，Sparkle 为后续选项。
 
-## 6. 配置、试用与许可
+## 6. 本地配置与免费使用
 
-非敏感配置采用 Codable + 版本化本地文件，写入原子替换并保留迁移备份。小型偏好可使用 UserDefaults。设备密钥、试用记录及许可凭证使用 Keychain；不使用云同步作为默认行为。
+非敏感配置采用 Codable + 版本化本地文件，写入原子替换并保留迁移备份。小型偏好可使用 UserDefaults；不使用云同步作为默认行为。
 
-本地试用不具备绝对防重领能力。永久授权采用签名凭证本地验签，没有强制在线租约；退款与解绑不能使永久离线旧机实时失效。
+Sensveil 全面免费，无应用配置数量上限，不设试用、购买、激活、设备绑定或离线许可验签，不新增许可服务和 Keychain 商业材料。旧商业状态不再影响保护规则。详见 [免费使用与离线政策](LICENSE_PROTOCOL.md)。
 
-许可服务建议 **TypeScript + Cloudflare Workers 原生 fetch handler + D1**，无额外服务框架。理由是接口少、运营成本低，D1 可提供数据库级原子条件写入。设备名额依据主库原子写入而非客户端/Worker 先读后写；唯一约束与请求幂等必须通过并发测试。签名私钥使用 Workers Secrets，服务端 Ed25519 与 CryptoKit 交叉验签。
-
-Workers/D1 是待实现验证的服务路线，不是已部署设施。付费用户长期服务成本、备份恢复和密钥运营不能用“免费额度”代替预算。详见 [许可协议](LICENSE_PROTOCOL.md)。
+主窗口采用原生侧边栏与右侧对应页面，一级菜单为防窥应用、保护效果、保护时段、权限、通用、关于。独立页面使用系统标准控件与分组表单，支持缩放和浅深色。通用明确登录启动尚未实现；关于从 Bundle 读取版本与构建号，并提供项目和作者 GitHub。过渡选择仍按当前裁决隐藏。
 
 ## 7. 工程与验证方向
 
-PoC 通过且 PRD 经评审后再建立 `apps/macos/` 的 Xcode 应用工程；可测试纯逻辑拆到 Swift Package，系统窗口适配留在应用。使用 XCTest/Swift Testing 验证状态机与权益，真机验证窗口层级和权限。未来许可服务放 `services/licensing/`；当前不创建虚构接口或占位服务。
+当前产品和 PoC 共用独立 Swift Package，系统窗口适配留在应用。使用 XCTest 验证状态机、配置和时段，真机验证窗口层级和权限。后续如建立正式 Xcode 产品工程，须保留可重复构建和测试入口；不再规划许可服务。
 
 工程初建时以已验证 Xcode 版本、SDK、deployment target 和依赖锁文件固定构建；不能将当前开发机 SDK 自动当成用户最低 OS。首发需 Apple Silicon 与 Intel 运行证据。完整门槛见 [可行性验证](../engineering/FEASIBILITY_SPIKE.md)。
 
@@ -127,5 +120,3 @@ PoC 通过且 PRD 经评审后再建立 `apps/macos/` 的 Xcode 应用工程；�
 - [Core Image 滤镜](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Reference/CoreImageFilterReference/)
 - [公证分发](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 - [Tauri 配置](https://v2.tauri.app/reference/config/) 与 [Electron BrowserWindow](https://www.electronjs.org/docs/latest/api/browser-window)
-- [Workers Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/) 与 [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/)
-- [D1 Database API](https://developers.cloudflare.com/d1/worker-api/d1-database/)、[限制与并发](https://developers.cloudflare.com/d1/platform/limits/)、[读复制一致性](https://developers.cloudflare.com/d1/best-practices/read-replication/)

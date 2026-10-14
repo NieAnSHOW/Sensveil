@@ -21,25 +21,37 @@ final class ProtectionConfigurationTests: XCTestCase {
     }
 
     @MainActor
-    func testDisabledApplicationsStillConsumeFreeLimit() throws {
-        let store = ConfigurationStore(appSupportDirectory: temporaryDirectory())
+    func testAdditionalApplicationsArePersistedWithoutLosingDisabledEntries() throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConfigurationStore(appSupportDirectory: directory)
         var configuration = ProtectionConfiguration(applications: [
             app("com.example.one", enabled: false),
             app("com.example.two"),
         ])
-        XCTAssertThrowsError(try store.add(app("com.example.three"), to: &configuration)) { error in
-            XCTAssertEqual(error as? ConfigurationError, .freeLimitReached)
-        }
+
+        try store.add(app("com.example.three"), to: &configuration)
+        try store.add(app("com.example.four"), to: &configuration)
+        try store.add(app("com.example.five", enabled: false), to: &configuration)
+        try store.add(app("com.example.three", sortIndex: 99), to: &configuration)
+        try store.save(configuration)
+
+        let reloaded = try ConfigurationStore(appSupportDirectory: directory).load()
+        XCTAssertEqual(reloaded.applications.map(\.bundleIdentifier), [
+            "com.example.one", "com.example.two", "com.example.three", "com.example.four", "com.example.five",
+        ])
+        XCTAssertEqual(reloaded.applications.map(\.isEnabled), [false, true, true, true, false])
+        XCTAssertEqual(reloaded.applications[2].sortIndex, 0, "Adding a duplicate keeps the original entry")
     }
 
     @MainActor
-    func testRemovingAnApplicationFreesCapacity() throws {
+    func testRemovingAnApplicationPreservesOtherEntries() throws {
         let store = ConfigurationStore(appSupportDirectory: temporaryDirectory())
         var configuration = ProtectionConfiguration(applications: [
-            app("com.example.one"), app("com.example.two"),
+            app("com.example.one"), app("com.example.two"), app("com.example.three"),
         ])
         store.remove(bundleIdentifier: "com.example.one", from: &configuration)
-        XCTAssertNoThrow(try store.add(app("com.example.three"), to: &configuration))
         XCTAssertEqual(configuration.applications.map(\.bundleIdentifier), ["com.example.two", "com.example.three"])
     }
 

@@ -4,7 +4,7 @@ import XCTest
 final class StatusPresentationTests: XCTestCase {
     func testOnlyVerifiedProtectedStatusDisplaysProtected() {
         XCTAssertEqual(StatusPresentation(.protected).title, "已保护")
-        for status: ProtectionStatus in [.cannotProtect("Material request submitted; visual protection is unverified."), .partialFailure(["Relative overlay order was lost"]), .paused, .overFreeLimit, .foreground, .notRunning] {
+        for status: ProtectionStatus in [.cannotProtect("Material request submitted; visual protection is unverified."), .partialFailure(["Relative overlay order was lost"]), .paused, .foreground, .notRunning] {
             XCTAssertNotEqual(StatusPresentation(status).title, "已保护")
         }
     }
@@ -21,7 +21,6 @@ final class StatusPresentationTests: XCTestCase {
         XCTAssertTrue(StatusPresentation(.cannotProtect("accessibility permission unavailable")).detail.contains("辅助功能"))
         XCTAssertTrue(StatusPresentation(.cannotProtect("some unknown SDK failure")).detail.contains("无法确认"))
         XCTAssertEqual(StatusPresentation(.paused).title, "已暂停")
-        XCTAssertEqual(StatusPresentation(.overFreeLimit).title, "超出免费版数量")
     }
 }
 

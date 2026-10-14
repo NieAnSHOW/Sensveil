@@ -46,6 +46,7 @@ final class ApplicationCatalogTests: XCTestCase {
             try original.write(to: store.configURL)
             let controller = SensveilController(configurationStore: store, catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false))
             XCTAssertTrue(controller.configurationLoadFailed)
+            XCTAssertFalse(controller.canAddApplication)
             controller.addApplication(ApplicationDescriptor(bundleIdentifier: "com.example.one", displayName: "One", url: directory.appendingPathComponent("One.app")))
             controller.removeApplication(ProtectedApplication(bundleIdentifier: "com.example.one", displayName: "One"))
             XCTAssertEqual(try Data(contentsOf: store.configURL), original)
@@ -54,20 +55,34 @@ final class ApplicationCatalogTests: XCTestCase {
     }
 
     @MainActor
-    func testControllerKeepsOriginalConfigurationWhenThirdApplicationIsAdded() throws {
+    func testControllerAddsAndReloadsApplicationsBeyondTwo() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = ConfigurationStore(appSupportDirectory: directory)
-        let original = ProtectionConfiguration(applications: [
-            ProtectedApplication(bundleIdentifier: "com.example.one", displayName: "One"),
+        try store.save(ProtectionConfiguration(applications: [
+            ProtectedApplication(bundleIdentifier: "com.example.one", displayName: "One", isEnabled: false),
             ProtectedApplication(bundleIdentifier: "com.example.two", displayName: "Two"),
+        ]))
+        let catalog = ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false)
+        let controller = SensveilController(configurationStore: store, catalog: catalog)
+        defer { controller.stopProtection() }
+        XCTAssertTrue(controller.canAddApplication)
+
+        for name in ["three", "four", "five", "three"] {
+            controller.addApplication(ApplicationDescriptor(bundleIdentifier: "com.example.\(name)", displayName: name, url: directory.appendingPathComponent("\(name).app")))
+            XCTAssertNil(controller.errorMessage)
+            XCTAssertTrue(controller.canAddApplication)
+        }
+
+        let reloaded = SensveilController(configurationStore: store, catalog: catalog)
+        defer { reloaded.stopProtection() }
+        XCTAssertEqual(reloaded.configuration.applications.map(\.bundleIdentifier), [
+            "com.example.one", "com.example.two", "com.example.three", "com.example.four", "com.example.five",
         ])
-        try store.save(original)
-        let controller = SensveilController(configurationStore: store, catalog: ApplicationCatalog(applicationDirectories: [], includesRunningApplications: false))
-        controller.addApplication(ApplicationDescriptor(bundleIdentifier: "com.example.three", displayName: "Three", url: directory.appendingPathComponent("Three.app")))
-        XCTAssertEqual(controller.configuration, original)
-        XCTAssertEqual(try store.load(), original)
-        XCTAssertEqual(controller.errorMessage, controller.freeLimitMessage)
+        XCTAssertFalse(reloaded.configuration.applications[0].isEnabled)
+        XCTAssertEqual(reloaded.configuration, controller.configuration)
+        XCTAssertTrue(reloaded.canAddApplication)
+        XCTAssertNil(reloaded.errorMessage)
     }
 
     @MainActor

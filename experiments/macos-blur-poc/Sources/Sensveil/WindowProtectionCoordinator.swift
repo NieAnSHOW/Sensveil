@@ -218,15 +218,6 @@ public final class WindowProtectionCoordinator {
         statuses.removeAll()
         refreshScheduleEvaluationAndRearmTimer()
         let apps = configuration.applications.filter(\.isEnabled)
-        if configuration.applications.count > ConfigurationStore.freeApplicationLimit {
-            statuses = Dictionary(uniqueKeysWithValues: configuration.applications.map { ($0.bundleIdentifier, .overFreeLimit) })
-            runtime.removeAllOverlays()
-            runtime.retainTrackers(for: [])
-            overlayKeys.removeAll()
-            snapshots.removeAll()
-            selectedInstances.removeAll()
-            return
-        }
         // Outside the configured schedule: remove layers and stop window
         // tracking, but keep launch/focus listeners so entering the schedule
         // re-enumerates current state instead of reusing stale geometry.

@@ -75,7 +75,6 @@ struct ApplicationPickerView: View {
             HStack {
                 Button("浏览…") { Task { await browseApplication() } }
                     .disabled(!controller.canAddApplication || isBrowsing)
-                Text(controller.freeLimitMessage).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("关闭") { dismiss() }
                     .keyboardShortcut(.cancelAction)

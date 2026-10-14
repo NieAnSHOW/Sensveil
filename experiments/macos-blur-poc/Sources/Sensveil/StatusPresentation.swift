@@ -19,8 +19,6 @@ public struct StatusPresentation: Equatable, Sendable {
             title = "部分窗口无法保护"
             detail = Array(Set(reasons.map(Self.failureDetail))).sorted().joined(separator: "；")
             symbol = "exclamationmark.shield"
-        case .overFreeLimit:
-            title = "超出免费版数量"; detail = "请保留最多 2 个应用后恢复保护"; symbol = "exclamationmark.circle"
         case .paused:
             title = "已暂停"; detail = "暂停期间不保护窗口"; symbol = "pause.circle"
         case .disabled:
