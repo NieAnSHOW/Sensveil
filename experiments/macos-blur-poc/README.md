@@ -4,7 +4,7 @@ This isolated Swift 6 experiment targets macOS 14 or later. It has no third-part
 
 ## Current product baseline (2026-10-14)
 
-Sensveil is fully free with no configured-app limit, trial clock, purchase, activation or device binding. Core protection and configuration run offline; old commercial state does not affect app selection or protection. Historical quota/trial/license checks in older plans and reports are obsolete. This usage policy does not change the repository's copyright license.
+Sensveil is fully free with no configured-app limit, trial clock, purchase, activation or device binding. Core protection and configuration run offline; old commercial state does not affect app selection or protection. Historical quota/trial/license checks in older plans and reports are obsolete. Since 2026-10-16, the repository is open source under the [MIT License](../../LICENSE); source availability does not certify release readiness or compatibility.
 
 The native macOS management window uses a sidebar and detail pages: 防窥应用, 防窥设置, 权限, 通用 and 关于. 防窥设置 combines effects and schedules in one scrollable form with a floating save/discard bar; both groups are saved together, and validation failure preserves the entire draft. Login launch remains explicitly unimplemented; transition selection remains hidden. About reads the marketing version and build number from `Bundle.main` (currently `0.1.0 (1)`) and offers the [project](https://github.com/NieAnSHOW/Sensveil) and [author](https://github.com/NieAnSHOW) links, opened only on a user click. Current requirements are in [TASK](../../TASK.md); the historical validation records below do not certify this UI change.
 
